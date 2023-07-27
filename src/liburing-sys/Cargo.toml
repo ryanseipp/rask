@@ -1,0 +1,10 @@
+[package]
+name = "liburing-sys"
+version = "2.4.0"
+edition = "2021"
+
+[dependencies]
+libc = { workspace = true }
+
+[build-dependencies]
+bindgen = "0.66.1"

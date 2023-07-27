@@ -1,0 +1,13 @@
+[package]
+name = "rask-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+slab = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+liburing = { path = "../liburing" }

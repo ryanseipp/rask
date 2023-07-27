@@ -1,0 +1,3 @@
+[submodule "src/liburing-sys/lib"]
+	path = src/liburing-sys/lib
+	url = git@github.com:axboe/liburing
