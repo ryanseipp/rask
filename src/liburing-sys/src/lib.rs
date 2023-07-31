@@ -14,15 +14,15 @@
 //! Rust binding for liburing
 
 use std::{
-    mem, ptr,
-    sync::atomic::{AtomicPtr, Ordering},
+    ptr,
+    sync::atomic::{AtomicPtr, AtomicU32, Ordering},
 };
 
 use libc::{c_void, mode_t, msghdr, sockaddr, socklen_t, timespec, uintptr_t};
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-pub const IO_URING_OP_SUPPORTED: u32 = 1u32 << 0;
+const IO_URING_OP_SUPPORTED: u32 = 1u32 << 0;
 
 // #[inline]
 // unsafe fn io_uring_write_once<T>(p: *mut T, v: T) {
@@ -52,105 +52,192 @@ unsafe fn io_uring_smp_load_acquire<T>(p: *mut T) -> T {
 
 /// # Safety
 /// `p` must be a valid and initialized `io_uring_probe`
+// #[inline]
+// pub unsafe fn io_uring_opcode_supported(p: *const io_uring_probe, op: i32) -> i32 {
+//     if op as u8 > (*p).last_op {
+//         return 0;
+//     }
+//
+//     ((*p).ops.1[op as usize].flags & IO_URING_OP_SUPPORTED as u16).into()
+// }
+
 #[inline]
-pub unsafe fn io_uring_opcode_supported(p: *const io_uring_probe, op: i32) -> i32 {
-    if op as u8 > (*p).last_op {
+pub fn io_uring_opcode_supported(probe: &io_uring_probe, op: i32) -> i32 {
+    if op as u8 > probe.last_op {
         return 0;
     }
 
-    ((*p).ops.1[op as usize].flags & IO_URING_OP_SUPPORTED as u16).into()
+    (probe.ops.1[op as usize].flags & IO_URING_OP_SUPPORTED as u16).into()
 }
 
-/// # Safety
-/// Must be called after io_uring_for_each_cqe()
+/// Marks `seen` IO completions belonging to CQ as consumed.
+///
+/// After the caller has submitted a request with [`io_uring_submit()`], the application can
+/// retrieve the complition with [`io_uring_wait_cqe()`], [`io_uring_peek_cqe()`], or any of the
+/// other CQE retrieval helpers, and mark it as consumed with [`io_uring_cqe_seen()`]. The function
+/// `io_uring_cqe_seen` calls this function.
+///
+/// Completions must be marked as seen, so that their slot can be reused. Failure to do so will
+/// result in the same completion being returned on the next invocation.
+///
+/// Must be called after [`io_uring_for_each_cqe()`].
 #[inline]
-pub unsafe fn io_uring_cq_advance(ring: *mut io_uring, nr: u32) {
-    if nr > 0 {
-        let cq = &mut (*ring).cq;
-        io_uring_smp_store_release(cq.khead, *cq.khead + nr);
+pub fn io_uring_cq_advance(cq: &mut io_uring_cq, seen: u32) {
+    unsafe {
+        if seen > 0 {
+            let head = *cq.khead + seen;
+            let khead: *mut AtomicU32 = cq.khead.cast();
+            (*khead).store(head, Ordering::Release);
+        }
     }
 }
 
-/// # Safety
-/// Must be called after io_uring_{peek,wait}_cqe() after the cqe has been processed by the
-/// application.
+/// Marks the IO completion `cqe` as consumed.
+///
+/// After the caller has submitted a request with [`io_uring_submit()`], the application can
+/// retrieve the complition with [`io_uring_wait_cqe()`], [`io_uring_peek_cqe()`], or any of the
+/// other CQE retrieval helpers, and mark it as consumed with [`io_uring_cqe_seen()`].
+///
+/// Completions must be marked as completed, so that their slot can be reused.
+///
+/// Must be called after [`io_uring_peek_cqe()`] or [`io_uring_wait_cqe()`] after the cqe has been
+/// processed by the application.
 #[inline]
-pub unsafe fn io_uring_cqe_seen(ring: *mut io_uring, cqe: *mut io_uring_cqe) {
-    if !cqe.is_null() {
-        io_uring_cq_advance(ring, 1);
-    }
+pub fn io_uring_cqe_seen(cq: &mut io_uring_cq, _cqe: io_uring_cqe) {
+    io_uring_cq_advance(cq, 1);
 }
 
-/// Associate pointer @data with the sqe, for later retrieval from the cqe at command completion
-/// time with io_uring_cqe_get_data().
+/// Stores a pointer with the submission queue entry.
+///
+/// After the caller has requested a submission queue entry (SQE) with [`io_uring_get_sqe`], they
+/// can associate a data pointer or value with the SQE. Once the completion arrives, the function
+/// [`io_uring_cqe_get_data`] can be called to retrieve the data pointer or value associated with
+/// the submitted request.
+#[inline]
+pub fn io_uring_sqe_set_data<T>(sqe: &mut io_uring_sqe, data: *mut T) {
+    sqe.user_data = data as u64;
+}
+
+/// Returns the [`user_data`](io_uring_cqe::user_data) with the completion queue entry as a data
+/// pointer.
+///
+/// After the caller has received a cempletion queue entry (CQE) with [`io_uring_wait_cqe()`], the
+/// application can call [`io_uring_cqe_get_data()`] to retrieve the user_data value.
 ///
 /// # Safety
-/// `sqe` must reference a valid and initialized `io_uring_sqe`
-/// Anything referenced by `data` must live long enough to be retrieved by `io_uring_cqe_get_data()`
+/// Requires that [`user_data`](io_uring_cqe::user_data) must have been set earlier with
+/// [`io_uring_sqe_set_data()`]. Otherwise the return value is undefined. The caller is responsible
+/// for using the same type `T` with [`io_uring_sqe_set_data()`] and this function.
 #[inline]
-pub unsafe fn io_uring_sqe_set_data(sqe: *mut io_uring_sqe, data: *mut c_void) {
-    (*sqe).user_data = data as u64;
+pub unsafe fn io_uring_cqe_get_data<T>(cqe: &io_uring_cqe) -> *mut T {
+    cqe.user_data as *mut T
 }
 
-/// # Safety
-/// `cqe` must reference a valid and initialized `io_uring_cqe`
-/// User is responsible for ensuring anything referenced by user_data lived long enough
+/// Stores a 64-bit data value with the submission queue entry.
+///
+/// After the caller has requested a submission queue entry (SQE) with [`io_uring_get_sqe()`], they
+/// can associate a data pointer or value with the SQE. Once the completion arrives, the function
+/// [`io_uring_cqe_get_data64()`] can be called to retrieve the data pointer or value associated
+/// with the submitted request.
 #[inline]
-pub unsafe fn io_uring_cqe_get_data(cqe: *const io_uring_cqe) -> *mut c_void {
-    (*cqe).user_data as *mut c_void
+pub fn io_uring_sqe_set_data64(sqe: &mut io_uring_sqe, data: u64) {
+    sqe.user_data = data;
 }
 
-/// Assing a 64-bit value to this sqe, which can get retrieved at completion time with
-/// `io_uring_cqe_get_data64`. Just like the non-64 variants, except these store a 64-bit type
-/// rather than a data pointer.
+/// Returns the [`user_data`](io_uring_cqe::user_data) with the completion queue entry as a 64-bit
+/// value.
+///
+/// After the caller has received a completion queue entry (CQE) with [`io_uring_wait_cqe()`], the
+/// application can all [`io_uring_cqe_get_data64()`] to retrieve the `user_data` value.
 ///
 /// # Safety
-/// `sqe` must reference a valid and initialized `io_uring_sqe`
-#[inline]
-pub unsafe fn io_uring_sqe_set_data64(sqe: *mut io_uring_sqe, data: u64) {
-    (*sqe).user_data = data;
-}
-
-/// # Safety
-/// `cqe` must reference a valid and initialized `io_uring_cqe`
+/// Requires that [`user_data`](io_uring_cqe::user_data) has been set earlier with the function
+/// [`io_uring_sqe_set_data64()`]. Otherwise, the return value is undefined.
 #[inline]
 pub unsafe fn io_uring_cqe_get_data64(cqe: *const io_uring_cqe) -> u64 {
     (*cqe).user_data
 }
 
-/// # Safety
-/// `sqe` must reference a valid and initialized `io_uring_sqe`
+/// Allows the caller to change the behavior of the submission queue entry by specifying flags. It
+/// enables the flags beloning to the sqe submission queue entry param.
+///
+/// `flags` is a bit mask of 0 or more of the following values ORed together:
+/// * [`IOSQE_FIXED_FILE`]
+///   * The file descriptor in the SQE refers to the index of a previously registered file or direct
+///   file descriptor, not a normal file descriptor.
+/// * [`IOSQE_ASYNC`]
+///   * Normal operation for io_uring is to try and issue an sqe as non-blocking first, and if that
+///   fails, execute it in an async manner.
+///   * To support more efficient overlapped operation of requests that the application
+///   knows/assumes will always (or most of the time) block, the application can ask for an sqe to
+///   be issued async from the start.
+///   * Note that this flag immediately causes the SQE to be offloaded to an async helper thread
+///   with no internal non-blocking attempt. This may be less efficient and should not be used
+///   liberally or without understanding the performance and efficiency tradeoffs.
+/// * [`IOSQE_IO_LINK`]
+///   * When this flag is specified, the SQE forms a link with the next SQE in the submission ring.
+///   That next SQE will not be started before the previous request completes. This, in effect,
+///   forms a chain of SQEs, which can be arbitrarily long.
+///   * The tail of the chain is denoted by the first SQE that does not have this flag set.
+///   * Chains are not supported across submission boundaries.
+///   * Even if the last SQE in a submission has this flag set, it will still terminate the current
+///   chain.
+///   * This flag has no effect on previous SQE submissions, nor does it impact SQEs that are
+///   outside of the chain tail. This means that multiple chains can be executing in parallel, or
+///   chains and individual SQEs.
+///   * Only members inside the chain are serialized. A chain of SQEs will be broken if any request
+///   in that chain ends in error.
+/// * [`IOSQE_IO_HARDLINK`]
+///   * Like [`IOSQE_IO_LINK`], except the links aren't severed if an error or unexpected result
+///   occurs.
+/// * [`IOSQE_IO_DRAIN`]
+///   * When this flag is specified, the SQE will not be started before previously submitted SQEs
+///   have completed, and new SQEs will not be started before this one completes.
+/// * [`IOSQE_CQE_SKIP_SUCCESS`]
+///   * Request that no CQE be generated for this request, if it completes successfully. This can
+///   be useful in cases where the application doesn't need to know when a specific request
+///   completed, if it completed successfully.
+/// * [`IOSQE_BUFFER_SELECT`]
+///   * If set, and if the request type supports it, select an IO buffer from the indicated buffer
+///   group.
+///   * This can be used with requests that read or receive data from a file or socket, where
+///   buffer selection is deferred until the kernel is ready to transfer data, instead of when the
+///   IO is originally submitted.
+///   * The application must also set the buf_group field in the SQE, indicating which previously
+///   registered buffer group to select a buffer from.
 #[inline]
-pub unsafe fn io_uring_sqe_set_flags(sqe: *mut io_uring_sqe, flags: u32) {
-    (*sqe).flags = flags as u8
+pub fn io_uring_sqe_set_flags(sqe: &mut io_uring_sqe, flags: u32) {
+    sqe.flags = flags as u8
 }
 
-/// # Safety
-/// `sqe` must reference a valid and initialized `io_uring_sqe`
-/// `addr`, if non-null, must reference a valid buffer or iovecs
 #[inline]
-unsafe fn io_uring_prep_rw(
+fn io_uring_prep_rw(
     op: u32,
-    sqe: *mut io_uring_sqe,
+    sqe: &mut io_uring_sqe,
     fd: i32,
-    addr: *const c_void,
+    addr: *const (),
     len: u32,
     offset: u64,
 ) {
-    (*sqe).opcode = op as u8;
-    (*sqe).flags = 0;
-    (*sqe).ioprio = 0;
-    (*sqe).fd = fd;
-    (*sqe).__bindgen_anon_1.off = offset;
-    (*sqe).__bindgen_anon_2.addr = addr as u64;
-    (*sqe).len = len;
+    sqe.opcode = op as u8;
+    sqe.flags = 0;
+    sqe.ioprio = 0;
+    sqe.fd = fd;
+    sqe.__bindgen_anon_1.off = offset;
+    sqe.__bindgen_anon_2.addr = addr as u64;
+    sqe.len = len;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
+/// Prepares a splice request
+///
+/// The submission queue entry is setup to use as input the file descriptor `fd_id` at offset
+/// `off_in`, splicing data to the file descriptor `fd_out` at offset `off_out`. `nbytes` bytes of
+/// data should be spliced between the two descriptors. `splice_flags` are modifier flags for the
+/// operation. See [`splice(2)`](https://man.archlinux.org/man/splice.2) for the generic splice
+/// flags.
 #[inline]
-pub unsafe fn io_uring_prep_splice(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_splice(
+    sqe: &mut io_uring_sqe,
     fd_in: i32,
     off_in: i64,
     fd_out: i32,
@@ -167,16 +254,20 @@ pub unsafe fn io_uring_prep_splice(
         off_out as u64,
     );
 
-    (*sqe).__bindgen_anon_2.splice_off_in = off_in as u64;
-    (*sqe).__bindgen_anon_5.splice_fd_in = fd_in;
-    (*sqe).__bindgen_anon_3.splice_flags = splice_flags;
+    sqe.__bindgen_anon_2.splice_off_in = off_in as u64;
+    sqe.__bindgen_anon_5.splice_fd_in = fd_in;
+    sqe.__bindgen_anon_3.splice_flags = splice_flags;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
+/// Prepares a tee request
+///
+/// The submission queue entry is setup to use as input the file descriptor `fd_in` and as output
+/// the file descriptor `fd_out` duplicating `nbytes` bytes worth of data. `splice_flags` are
+/// modifier flags for the operation. See [`tee(2)`](https://man.archlinux.org/man/tee.2) for the
+/// generic splice flags.
 #[inline]
-pub unsafe fn io_uring_prep_tee(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_tee(
+    sqe: &mut io_uring_sqe,
     fd_in: i32,
     fd_out: i32,
     nbytes: u32,
@@ -184,176 +275,294 @@ pub unsafe fn io_uring_prep_tee(
 ) {
     io_uring_prep_rw(IORING_OP_TEE, sqe, fd_out, ptr::null(), nbytes, 0);
 
-    (*sqe).__bindgen_anon_2.splice_off_in = 0;
-    (*sqe).__bindgen_anon_5.splice_fd_in = fd_in;
-    (*sqe).__bindgen_anon_3.splice_flags = splice_flags;
+    sqe.__bindgen_anon_2.splice_off_in = 0;
+    sqe.__bindgen_anon_5.splice_fd_in = fd_in;
+    sqe.__bindgen_anon_3.splice_flags = splice_flags;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `iovecs` must point to an array of `iovec` with length `nr_vecs`
+/// Prepares a vectored IO read request
+///
+/// On files that support seeking, if the offset is set to -1, the read operation commences at the
+/// file offset, and the file offset is incremented by the number of bytes read. See
+/// [`read(2)`](https://man.archlinux.org/man/read.2) for more details. Note that for an async API,
+/// reading and updating the current file offset may result in unpredictable behavior, unless
+/// access to the file is serialized. It is not encouraged to use this feature, if it's possible to
+/// provide the desired IO offset from the application or library.
+///
+/// On files that are not capable of seeking, the offset must be 0 or -1. After the read has been
+/// prepared it can be submitted with one of the submit functions.
+///
+/// # Notes
+/// Unless an application explicitly needs to pass in more than one iovec, it is more efficient to
+/// use [`io_uring_prep_read`] rather than this function, as no state has to be maintained for a
+/// non-vectored IO request. As with any request that passes in data in a struct, that data must
+/// remain valid until the request has been successfully submitted. It need not remain valid until
+/// completion.
+///
+/// Once a request has been submitted, the in-kernel state is stable. Very early kernels (5.4 and
+/// earlier) required state to be stable until the completion occurred. Applications can test for
+/// this behavior by inspecting the `IORING_FEAT_SUBMIT_STABLE` flag passed back from
+/// [`io_uring_queue_init_params`].
 #[inline]
-pub unsafe fn io_uring_prep_readv(
-    sqe: *mut io_uring_sqe,
-    fd: i32,
-    iovecs: *const iovec,
-    nr_vecs: u32,
-    offset: u64,
-) {
+pub fn io_uring_prep_readv(sqe: &mut io_uring_sqe, fd: i32, iovecs: &[iovec], offset: u64) {
     io_uring_prep_rw(
         IORING_OP_READV,
         sqe,
         fd,
-        mem::transmute(iovecs),
-        nr_vecs,
+        iovecs.as_ptr().cast(),
+        iovecs.len() as u32,
         offset,
     )
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `iovecs` must point to an array of `iovec` with length `nr_vecs`
+/// Prepares a vectored IO read request
+///
+/// Similar to [`io_uring_prep_readv`] with the addition of flags. Supported values for flags are:
+/// * `RWF_HIPRI`: High priority request, poll if possible
+/// * `RWF_DSYNC`: per-IO O_DSYNC
+/// * `RWF_SYNC`: per-IO O_SYNC
+/// * `RWF_NOWAIT`: per-IO, return -EAGAIN if operation would block
+/// * `RWF_APPEND`: per-IO O_APPEND
+///
+/// # Notes
+/// Unless an application explicitly needs to pass in more than one iovec, it is more efficient to
+/// use [`io_uring_prep_read`] rather than this function, as no state has to be maintained for a
+/// non-vectored IO request. As with any request that passes in data in a struct, that data must
+/// remain valid until the request has been successfully submitted. It need not remain valid until
+/// completion.
+///
+/// Once a request has been submitted, the in-kernel state is stable. Very early kernels (5.4 and
+/// earlier) required state to be stable until the completion occurred. Applications can test for
+/// this behavior by inspecting the `IORING_FEAT_SUBMIT_STABLE` flag passed back from
+/// [`io_uring_queue_init_params`].
 #[inline]
-pub unsafe fn io_uring_prep_readv2(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_readv2(
+    sqe: &mut io_uring_sqe,
     fd: i32,
-    iovecs: *const iovec,
-    nr_vecs: u32,
+    iovecs: &[iovec],
     offset: u64,
     flags: i32,
 ) {
-    io_uring_prep_readv(sqe, fd, iovecs, nr_vecs, offset);
-    (*sqe).__bindgen_anon_3.rw_flags = flags;
+    io_uring_prep_readv(sqe, fd, iovecs, offset);
+    sqe.__bindgen_anon_3.rw_flags = flags;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `buf` must point to a valid array with length at least `nbytes`
+/// Prepares an IO read request with a previously registered IO buffer
+///
+/// This works just like [`io_uring_prep_read`] except i requires the use of buffers that have been
+/// registered with [`io_uring_register_buffers`]. The `buf` argument must fall within a region
+/// specified by `buf_index` in the previously registered buffer. The buffer need not be aligned
+/// with the start of the registered buffer.
 #[inline]
-pub unsafe fn io_uring_prep_read_fixed(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_read_fixed(
+    sqe: &mut io_uring_sqe,
     fd: i32,
-    buf: *mut c_void,
-    nbytes: u32,
+    buf: &mut [u8],
     offset: u64,
     buf_index: i32,
 ) {
-    io_uring_prep_rw(IORING_OP_READ_FIXED, sqe, fd, buf, nbytes, offset);
-    (*sqe).__bindgen_anon_4.buf_index = buf_index as u16;
+    io_uring_prep_rw(
+        IORING_OP_READ_FIXED,
+        sqe,
+        fd,
+        buf.as_ptr().cast(),
+        buf.len() as u32,
+        offset,
+    );
+    sqe.__bindgen_anon_4.buf_index = buf_index as u16;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `iovecs` must point to an array of `iovec` with length `nr_vecs`
+/// Prepares a vectored IO write request
+///
+/// On files that support seeking, if the offset is set to -1, the write operation commences at the
+/// file offset, and the file offset is incremented by the number of bytes written. See
+/// [`write(2)`](https://man.archlinux.org/man/write.2) for more details. Note that for an async
+/// API, reading and updating the current file offset may result in unpredictable behavior, unless
+/// access to the file is serialized. It is not encouraged to use this feature, if it's possible to
+/// provide the desired IO offset from the application or library.
+///
+/// On files that are not capable of seeking, the offset must be 0 or -1. After the write has been
+/// prepared it can be submitted with one of the submit functions.
+///
+/// # Notes
+/// Unless an application explicitly needs to pass in more than one iovec, it is more efficient to
+/// use [`io_uring_prep_read`] rather than this function, as no state has to be maintained for a
+/// non-vectored IO request. As with any request that passes in data in a struct, that data must
+/// remain valid until the request has been successfully submitted. It need not remain valid until
+/// completion.
+///
+/// Once a request has been submitted, the in-kernel state is stable. Very early kernels (5.4 and
+/// earlier) required state to be stable until the completion occurred. Applications can test for
+/// this behavior by inspecting the `IORING_FEAT_SUBMIT_STABLE` flag passed back from
+/// [`io_uring_queue_init_params`].
 #[inline]
-pub unsafe fn io_uring_prep_writev(
-    sqe: *mut io_uring_sqe,
-    fd: i32,
-    iovecs: *const iovec,
-    nr_vecs: u32,
-    offset: u64,
-) {
-    io_uring_prep_rw(IORING_OP_WRITEV, sqe, fd, iovecs.cast(), nr_vecs, offset)
+pub fn io_uring_prep_writev(sqe: &mut io_uring_sqe, fd: i32, iovecs: &[iovec], offset: u64) {
+    io_uring_prep_rw(
+        IORING_OP_WRITEV,
+        sqe,
+        fd,
+        iovecs.as_ptr().cast(),
+        iovecs.len() as u32,
+        offset,
+    )
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `iovecs` must point to an array of `iovec` with length `nr_vecs`
+/// Prepares a vectored IO write request
+///
+/// Similar to [`io_uring_prep_writev`] with the addition of flags. Supported values for flags are:
+/// * `RWF_HIPRI`: High priority request, poll if possible
+/// * `RWF_DSYNC`: per-IO O_DSYNC
+/// * `RWF_SYNC`: per-IO O_SYNC
+/// * `RWF_NOWAIT`: per-IO, return -EAGAIN if operation would block
+/// * `RWF_APPEND`: per-IO O_APPEND
+///
+/// # Notes
+/// Unless an application explicitly needs to pass in more than one iovec, it is more efficient to
+/// use [`io_uring_prep_write`] rather than this function, as no state has to be maintained for a
+/// non-vectored IO request. As with any request that passes in data in a struct, that data must
+/// remain valid until the request has been successfully submitted. It need not remain valid until
+/// completion.
+///
+/// Once a request has been submitted, the in-kernel state is stable. Very early kernels (5.4 and
+/// earlier) required state to be stable until the completion occurred. Applications can test for
+/// this behavior by inspecting the `IORING_FEAT_SUBMIT_STABLE` flag passed back from
+/// [`io_uring_queue_init_params`].
 #[inline]
-pub unsafe fn io_uring_prep_writev2(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_writev2(
+    sqe: &mut io_uring_sqe,
     fd: i32,
-    iovecs: *const iovec,
-    nr_vecs: u32,
+    iovecs: &[iovec],
     offset: u64,
     flags: i32,
 ) {
-    io_uring_prep_writev(sqe, fd, iovecs, nr_vecs, offset);
-    (*sqe).__bindgen_anon_3.rw_flags = flags;
+    io_uring_prep_writev(sqe, fd, iovecs, offset);
+    sqe.__bindgen_anon_3.rw_flags = flags;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `buf` must point to a valid array with length at least `nbytes`
+/// Prepares an IO write request with a previously registered IO buffer
+///
+/// This works just like [`io_uring_prep_write`] except i requires the use of buffers that have been
+/// registered with [`io_uring_register_buffers`]. The `buf` argument must fall within a region
+/// specified by `buf_index` in the previously registered buffer. The buffer need not be aligned
+/// with the start of the registered buffer.
 #[inline]
-pub unsafe fn io_uring_prep_write_fixed(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_write_fixed(
+    sqe: &mut io_uring_sqe,
     fd: i32,
-    buf: *mut c_void,
-    nbytes: u32,
+    buf: &mut [u8],
     offset: u64,
     buf_index: i32,
 ) {
-    io_uring_prep_rw(IORING_OP_WRITE_FIXED, sqe, fd, buf, nbytes, offset);
-    (*sqe).__bindgen_anon_4.buf_index = buf_index as u16;
+    io_uring_prep_rw(
+        IORING_OP_WRITE_FIXED,
+        sqe,
+        fd,
+        buf.as_mut_ptr().cast(),
+        buf.len() as u32,
+        offset,
+    );
+    sqe.__bindgen_anon_4.buf_index = buf_index as u16;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `msg` must point to a valid and initialized `msghdr`
+/// Prepares a recvmsg request.
+///
+/// The submission queue entry is setup to use the file descriptor `fd` to start receiving the data
+/// indicated by `msg` with the [`recvmsg(2)`](https://man.archlinux.org/man/recvmsg.2) defined
+/// flags in the `flags` argument.
+///
+/// # Notes
+/// As with any request that passes in data in a struct, that data must remain valid until the
+/// request has been successfully submitted. It need not remain valid until completion.
+/// Once a request has been submitted, the in-kernel state is stable. Very early kernels (5.4 and
+/// earlier) required state to be stable until the completion occurred. Applications can test for
+/// this behavior by inspecting the `IORING_FEAT_SUBMIT_STABLE` flag passed back from
+/// [`io_uring_queue_init_params`].
 #[inline]
-pub unsafe fn io_uring_prep_recvmsg(sqe: *mut io_uring_sqe, fd: i32, msg: *mut msghdr, flags: u32) {
+pub fn io_uring_prep_recvmsg(sqe: &mut io_uring_sqe, fd: i32, msg: *mut msghdr, flags: u32) {
     io_uring_prep_rw(IORING_OP_RECVMSG, sqe, fd, msg.cast(), 1, 0);
-    (*sqe).__bindgen_anon_3.msg_flags = flags;
+    sqe.__bindgen_anon_3.msg_flags = flags;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `msg` must point to a valid and initialized `msghdr`
+/// Prepares a multishot recvmsg request.
+///
+/// The submission queue entry is setup to use the file descriptor `fd` to start receiving the data
+/// indicated by `msg` with the [`recvmsg(2)`](https://man.archlinux.org/man/recvmsg.2) defined
+/// flags in the `flags` argument.
+///
+/// Allows the application to issue a single receive request, which repeatedly posts a CQE when
+/// data is available. It requires the `IOSQE_BUFFER_SELECT` flag to be set and no `MSG_WAITALL`
+/// flag to be set. Therefore each CQE will take a buffer out of a provided buffer pool for
+/// receiving. The application should check the flags of each CQE, regardless of its result. If a
+/// posted CQE does not have the `IORING_CQE_F_MORE` flag set then the multishot receive will be
+/// done and the application should issue a new request.
+///
+/// Unlike [`recvmsg(2)`](https://man.archlinux.org/man/recvmsg.2), multishot recvmsg will prepend
+/// a struct [`io_uring_recvmsg_out`] which describes the layout of the rest of the buffer in
+/// combination with the intitial struct [`msghdr`] submitted with the request. See
+/// [`io_uring_recvmsg_out(3)`](https://man.archlinux.org/man/io_uring_recvmsg_out.3) for more
+/// information on accessing the data.
+///
+/// # Notes
+/// As with any request that passes in data in a struct, that data must remain valid until the
+/// request has been successfully submitted. It need not remain valid until completion.
+/// Once a request has been submitted, the in-kernel state is stable. Very early kernels (5.4 and
+/// earlier) required state to be stable until the completion occurred. Applications can test for
+/// this behavior by inspecting the `IORING_FEAT_SUBMIT_STABLE` flag passed back from
+/// [`io_uring_queue_init_params`].
 #[inline]
-pub unsafe fn io_uring_prep_recvmsg_multishot(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_recvmsg_multishot(
+    sqe: &mut io_uring_sqe,
     fd: i32,
     msg: *mut msghdr,
     flags: u32,
 ) {
     io_uring_prep_recvmsg(sqe, fd, msg, flags);
-    (*sqe).ioprio |= IORING_RECV_MULTISHOT as u16;
+    sqe.ioprio |= IORING_RECV_MULTISHOT as u16;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `msg` must point to a valid and initialized `msghdr`
+/// Prepares a sendmsg request
+///
+/// The submission queue entry is setup to use the file descriptor fd to start sending the data
+/// indicated by `msg` with the [`sendmsg(2)`](https://man.archlinux.org/man/sendmsg.2) defined
+/// flags in the `flags` argument.
+///
+/// # Notes
+/// Using `IOSQE_IO_LINK` with this request type requires the setting of `MSG_WAITALL` in the flags
+/// argument, as a short send isn't considered an error condition without that being set.
+///
+/// As with any request that passes in data in a struct, that data must remain valid until the
+/// request has been successfully submitted. It need not remain valid until completion.
+/// Once a request has been submitted, the in-kernel state is stable. Very early kernels (5.4 and
+/// earlier) required state to be stable until the completion occurred. Applications can test for
+/// this behavior by inspecting the `IORING_FEAT_SUBMIT_STABLE` flag passed back from
+/// [`io_uring_queue_init_params`].
 #[inline]
-pub unsafe fn io_uring_prep_sendmsg(
-    sqe: *mut io_uring_sqe,
-    fd: i32,
-    msg: *const msghdr,
-    flags: u32,
-) {
+pub fn io_uring_prep_sendmsg(sqe: &mut io_uring_sqe, fd: i32, msg: *const msghdr, flags: u32) {
     io_uring_prep_rw(IORING_OP_SENDMSG, sqe, fd, msg.cast(), 1, 0);
-    (*sqe).__bindgen_anon_3.msg_flags = flags;
+    sqe.__bindgen_anon_3.msg_flags = flags;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_poll_add(sqe: *mut io_uring_sqe, fd: i32, poll_mask: u32) {
+pub fn io_uring_prep_poll_add(sqe: &mut io_uring_sqe, fd: i32, poll_mask: u32) {
     io_uring_prep_rw(IORING_OP_POLL_ADD, sqe, fd, ptr::null(), 0, 0);
-    (*sqe).__bindgen_anon_3.poll32_events = poll_mask.to_le();
+    sqe.__bindgen_anon_3.poll32_events = poll_mask.to_le();
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_poll_multishot(sqe: *mut io_uring_sqe, fd: i32, poll_mask: u32) {
+pub fn io_uring_prep_poll_multishot(sqe: &mut io_uring_sqe, fd: i32, poll_mask: u32) {
     io_uring_prep_poll_add(sqe, fd, poll_mask);
-    (*sqe).len = IORING_POLL_ADD_MULTI;
+    sqe.len = IORING_POLL_ADD_MULTI;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_poll_remove(sqe: *mut io_uring_sqe, user_data: u64) {
+pub fn io_uring_prep_poll_remove(sqe: &mut io_uring_sqe, user_data: u64) {
     io_uring_prep_rw(IORING_OP_POLL_REMOVE, sqe, -1, ptr::null(), 0, 0);
-    (*sqe).__bindgen_anon_2.addr = user_data
+    sqe.__bindgen_anon_2.addr = user_data
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_poll_update(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_poll_update(
+    sqe: &mut io_uring_sqe,
     old_user_data: u64,
     new_user_data: u64,
     poll_mask: u32,
@@ -367,93 +576,66 @@ pub unsafe fn io_uring_prep_poll_update(
         flags,
         new_user_data,
     );
-    (*sqe).__bindgen_anon_2.addr = old_user_data;
-    (*sqe).__bindgen_anon_3.poll32_events = poll_mask.to_le();
+    sqe.__bindgen_anon_2.addr = old_user_data;
+    sqe.__bindgen_anon_3.poll32_events = poll_mask.to_le();
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_fsync(sqe: *mut io_uring_sqe, fd: i32, fsync_flags: u32) {
+pub fn io_uring_prep_fsync(sqe: &mut io_uring_sqe, fd: i32, fsync_flags: u32) {
     io_uring_prep_rw(IORING_OP_FSYNC, sqe, fd, ptr::null(), 0, 0);
-    (*sqe).__bindgen_anon_3.fsync_flags = fsync_flags;
+    sqe.__bindgen_anon_3.fsync_flags = fsync_flags;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_nop(sqe: *mut io_uring_sqe) {
+pub fn io_uring_prep_nop(sqe: &mut io_uring_sqe) {
     io_uring_prep_rw(IORING_OP_NOP, sqe, -1, ptr::null(), 0, 0);
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `ts` must point to a valid and initialized `timespec`
 #[inline]
-pub unsafe fn io_uring_prep_timeout(
-    sqe: *mut io_uring_sqe,
-    ts: *mut timespec,
-    count: u32,
-    flags: u32,
-) {
+pub fn io_uring_prep_timeout(sqe: &mut io_uring_sqe, ts: *mut timespec, count: u32, flags: u32) {
     io_uring_prep_rw(IORING_OP_TIMEOUT, sqe, -1, ts.cast(), 1, count as u64);
-    (*sqe).__bindgen_anon_3.timeout_flags = flags;
+    sqe.__bindgen_anon_3.timeout_flags = flags;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_timeout_remove(sqe: *mut io_uring_sqe, user_data: u64, flags: u32) {
+pub fn io_uring_prep_timeout_remove(sqe: &mut io_uring_sqe, user_data: u64, flags: u32) {
     io_uring_prep_rw(IORING_OP_TIMEOUT_REMOVE, sqe, -1, ptr::null(), 0, 0);
-    (*sqe).__bindgen_anon_2.addr = user_data;
-    (*sqe).__bindgen_anon_3.timeout_flags = flags;
+    sqe.__bindgen_anon_2.addr = user_data;
+    sqe.__bindgen_anon_3.timeout_flags = flags;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `ts` must point to a valid and initialized `timespec`
 #[inline]
-pub unsafe fn io_uring_prep_timeout_update(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_timeout_update(
+    sqe: &mut io_uring_sqe,
     ts: *mut timespec,
     user_data: u64,
     flags: u32,
 ) {
     io_uring_prep_rw(IORING_OP_TIMEOUT_REMOVE, sqe, -1, ptr::null(), 0, ts as u64);
-    (*sqe).__bindgen_anon_2.addr = user_data;
-    (*sqe).__bindgen_anon_3.timeout_flags = flags | IORING_TIMEOUT_UPDATE;
+    sqe.__bindgen_anon_2.addr = user_data;
+    sqe.__bindgen_anon_3.timeout_flags = flags | IORING_TIMEOUT_UPDATE;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `addr` must point to a valid and initialized `sockaddr`
-/// `addrlen` must point to a valid and initialized `socklen_t`
 #[inline]
-pub unsafe fn io_uring_prep_accept(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_accept(
+    sqe: &mut io_uring_sqe,
     fd: i32,
     addr: *mut sockaddr,
     addrlen: *mut socklen_t,
     flags: u32,
 ) {
     io_uring_prep_rw(IORING_OP_ACCEPT, sqe, fd, addr.cast(), 0, addrlen as u64);
-    (*sqe).__bindgen_anon_3.accept_flags = flags;
+    sqe.__bindgen_anon_3.accept_flags = flags;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-unsafe fn io_uring_set_target_fixed_file(sqe: *mut io_uring_sqe, file_index: u32) {
-    (*sqe).__bindgen_anon_5.file_index = file_index + 1;
+fn io_uring_set_target_fixed_file(sqe: &mut io_uring_sqe, file_index: u32) {
+    sqe.__bindgen_anon_5.file_index = file_index + 1;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `addr` must point to a valid and initialized `sockaddr`
-/// `addrlen` must point to a valid and initialized `socklen_t`
 #[inline]
-pub unsafe fn io_uring_prep_accept_direct(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_accept_direct(
+    sqe: &mut io_uring_sqe,
     fd: i32,
     addr: *mut sockaddr,
     addrlen: *mut socklen_t,
@@ -470,29 +652,21 @@ pub unsafe fn io_uring_prep_accept_direct(
     io_uring_set_target_fixed_file(sqe, file_index);
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `addr` must point to a valid and initialized `sockaddr`
-/// `addrlen` must point to a valid and initialized `socklen_t`
 #[inline]
-pub unsafe fn io_uring_prep_multishot_accept(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_multishot_accept(
+    sqe: &mut io_uring_sqe,
     fd: i32,
     addr: *mut sockaddr,
     addrlen: *mut socklen_t,
     flags: u32,
 ) {
     io_uring_prep_accept(sqe, fd, addr, addrlen, flags);
-    (*sqe).ioprio |= IORING_ACCEPT_MULTISHOT as u16;
+    sqe.ioprio |= IORING_ACCEPT_MULTISHOT as u16;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
-/// `addr` must point to a valid and initialized `sockaddr`
-/// `addrlen` must point to a valid and initialized `socklen_t`
 #[inline]
-pub unsafe fn io_uring_prep_multishot_accept_direct(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_multishot_accept_direct(
+    sqe: &mut io_uring_sqe,
     fd: i32,
     addr: *mut sockaddr,
     addrlen: *mut socklen_t,
@@ -502,43 +676,33 @@ pub unsafe fn io_uring_prep_multishot_accept_direct(
     io_uring_set_target_fixed_file(sqe, (IORING_FILE_INDEX_ALLOC - 1) as u32);
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_cancel64(sqe: *mut io_uring_sqe, user_data: u64, flags: i32) {
+pub fn io_uring_prep_cancel64(sqe: &mut io_uring_sqe, user_data: u64, flags: i32) {
     io_uring_prep_rw(IORING_OP_ASYNC_CANCEL, sqe, -1, ptr::null(), 0, 0);
-    (*sqe).__bindgen_anon_2.addr = user_data;
-    (*sqe).__bindgen_anon_3.cancel_flags = flags as u32;
+    sqe.__bindgen_anon_2.addr = user_data;
+    sqe.__bindgen_anon_3.cancel_flags = flags as u32;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_cancel(sqe: *mut io_uring_sqe, user_data: *mut c_void, flags: i32) {
+pub fn io_uring_prep_cancel(sqe: &mut io_uring_sqe, user_data: *mut c_void, flags: i32) {
     io_uring_prep_cancel64(sqe, user_data as u64, flags);
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_cancel_fd(sqe: *mut io_uring_sqe, fd: i32, flags: u32) {
+pub fn io_uring_prep_cancel_fd(sqe: &mut io_uring_sqe, fd: i32, flags: u32) {
     io_uring_prep_rw(IORING_OP_ASYNC_CANCEL, sqe, fd, ptr::null(), 0, 0);
-    (*sqe).__bindgen_anon_3.cancel_flags = flags | IORING_ASYNC_CANCEL_FD;
+    sqe.__bindgen_anon_3.cancel_flags = flags | IORING_ASYNC_CANCEL_FD;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_link_timeout(sqe: *mut io_uring_sqe, ts: *mut timespec, flags: u32) {
+pub fn io_uring_prep_link_timeout(sqe: &mut io_uring_sqe, ts: *mut timespec, flags: u32) {
     io_uring_prep_rw(IORING_OP_LINK_TIMEOUT, sqe, -1, ts.cast(), 1, 0);
-    (*sqe).__bindgen_anon_3.timeout_flags = flags;
+    sqe.__bindgen_anon_3.timeout_flags = flags;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_connect(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_connect(
+    sqe: &mut io_uring_sqe,
     fd: i32,
     addr: *const sockaddr,
     addrlen: socklen_t,
@@ -546,35 +710,20 @@ pub unsafe fn io_uring_prep_connect(
     io_uring_prep_rw(IORING_OP_CONNECT, sqe, fd, addr.cast(), 0, addrlen as u64);
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_files_update(
-    sqe: *mut io_uring_sqe,
-    fds: *mut i32,
-    nr_fds: u32,
-    offset: i32,
-) {
+pub fn io_uring_prep_files_update(sqe: &mut io_uring_sqe, fds: &mut [i32], offset: i32) {
     io_uring_prep_rw(
         IORING_OP_FILES_UPDATE,
         sqe,
         -1,
-        fds.cast(),
-        nr_fds,
+        fds.as_mut_ptr().cast(),
+        fds.len() as u32,
         offset as u64,
     );
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_fallocate(
-    sqe: *mut io_uring_sqe,
-    fd: i32,
-    mode: i32,
-    offset: u64,
-    len: u64,
-) {
+pub fn io_uring_prep_fallocate(sqe: &mut io_uring_sqe, fd: i32, mode: i32, offset: u64, len: u64) {
     io_uring_prep_rw(
         IORING_OP_FALLOCATE,
         sqe,
@@ -583,28 +732,24 @@ pub unsafe fn io_uring_prep_fallocate(
         mode as u32,
         offset,
     );
-    (*sqe).__bindgen_anon_2.addr = len;
+    sqe.__bindgen_anon_2.addr = len;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_openat(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_openat(
+    sqe: &mut io_uring_sqe,
     dfd: i32,
     path: *const char,
     flags: i32,
     mode: mode_t,
 ) {
     io_uring_prep_rw(IORING_OP_OPENAT, sqe, dfd, path.cast(), mode, 0);
-    (*sqe).__bindgen_anon_3.open_flags = flags as u32;
+    sqe.__bindgen_anon_3.open_flags = flags as u32;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_openat_direct(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_openat_direct(
+    sqe: &mut io_uring_sqe,
     dfd: i32,
     path: *const char,
     flags: i32,
@@ -621,41 +766,27 @@ pub unsafe fn io_uring_prep_openat_direct(
     io_uring_set_target_fixed_file(sqe, file_index);
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_close(sqe: *mut io_uring_sqe, fd: i32) {
+pub fn io_uring_prep_close(sqe: &mut io_uring_sqe, fd: i32) {
     io_uring_prep_rw(IORING_OP_CLOSE, sqe, fd, ptr::null(), 0, 0);
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_close_direct(sqe: *mut io_uring_sqe, file_index: u32) {
+pub fn io_uring_prep_close_direct(sqe: &mut io_uring_sqe, file_index: u32) {
     io_uring_prep_close(sqe, 0);
     io_uring_set_target_fixed_file(sqe, file_index);
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_read(
-    sqe: *mut io_uring_sqe,
-    fd: i32,
-    buf: *mut c_void,
-    nbytes: u32,
-    offset: u64,
-) {
+pub fn io_uring_prep_read(sqe: &mut io_uring_sqe, fd: i32, buf: *mut (), nbytes: u32, offset: u64) {
     io_uring_prep_rw(IORING_OP_READ, sqe, fd, buf, nbytes, offset);
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_write(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_write(
+    sqe: &mut io_uring_sqe,
     fd: i32,
-    buf: *mut c_void,
+    buf: *mut (),
     nbytes: u32,
     offset: u64,
 ) {
@@ -664,39 +795,33 @@ pub unsafe fn io_uring_prep_write(
 
 // TODO: statx fadvise madvise
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_send(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_send(
+    sqe: &mut io_uring_sqe,
     sockfd: i32,
-    buf: *const c_void,
+    buf: *const (),
     len: usize,
     flags: i32,
 ) {
     io_uring_prep_rw(IORING_OP_SEND, sqe, sockfd, buf, len as u32, 0);
-    (*sqe).__bindgen_anon_3.msg_flags = flags as u32;
+    sqe.__bindgen_anon_3.msg_flags = flags as u32;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_send_set_addr(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_send_set_addr(
+    sqe: &mut io_uring_sqe,
     dest_addr: *const sockaddr,
     addr_len: u16,
 ) {
-    (*sqe).__bindgen_anon_1.addr2 = dest_addr as u64;
-    (*sqe).__bindgen_anon_5.__bindgen_anon_1.addr_len = addr_len;
+    sqe.__bindgen_anon_1.addr2 = dest_addr as u64;
+    sqe.__bindgen_anon_5.__bindgen_anon_1.addr_len = addr_len;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_sendto(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_sendto(
+    sqe: &mut io_uring_sqe,
     sockfd: i32,
-    buf: *const c_void,
+    buf: *const (),
     len: usize,
     flags: i32,
     addr: *const sockaddr,
@@ -706,88 +831,71 @@ pub unsafe fn io_uring_prep_sendto(
     io_uring_prep_send_set_addr(sqe, addr, addr_len);
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_send_zc(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_send_zc(
+    sqe: &mut io_uring_sqe,
     sockfd: i32,
-    buf: *const c_void,
+    buf: *const (),
     len: usize,
     flags: i32,
     zc_flags: u32,
 ) {
     io_uring_prep_rw(IORING_OP_SEND_ZC, sqe, sockfd, buf, len as u32, 0);
-    (*sqe).__bindgen_anon_3.msg_flags = flags as u32;
-    (*sqe).ioprio = zc_flags as u16;
+    sqe.__bindgen_anon_3.msg_flags = flags as u32;
+    sqe.ioprio = zc_flags as u16;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_send_zc_fixed(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_send_zc_fixed(
+    sqe: &mut io_uring_sqe,
     sockfd: i32,
-    buf: *const c_void,
+    buf: *const (),
     len: usize,
     flags: i32,
     zc_flags: u32,
     buf_index: u32,
 ) {
     io_uring_prep_send_zc(sqe, sockfd, buf, len, flags, zc_flags);
-    (*sqe).ioprio |= IORING_RECVSEND_FIXED_BUF as u16;
-    (*sqe).__bindgen_anon_4.buf_index = buf_index as u16;
+    sqe.ioprio |= IORING_RECVSEND_FIXED_BUF as u16;
+    sqe.__bindgen_anon_4.buf_index = buf_index as u16;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_sendmsg_zc(
-    sqe: *mut io_uring_sqe,
-    fd: i32,
-    msg: *const msghdr,
-    flags: u32,
-) {
+pub fn io_uring_prep_sendmsg_zc(sqe: &mut io_uring_sqe, fd: i32, msg: *const msghdr, flags: u32) {
     io_uring_prep_sendmsg(sqe, fd, msg, flags);
-    (*sqe).opcode = IORING_OP_SENDMSG_ZC as u8;
+    sqe.opcode = IORING_OP_SENDMSG_ZC as u8;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_recv(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_recv(
+    sqe: &mut io_uring_sqe,
     sockfd: i32,
-    buf: *mut c_void,
+    buf: *mut (),
     len: usize,
     flags: i32,
 ) {
     io_uring_prep_rw(IORING_OP_RECV, sqe, sockfd, buf, len as u32, 0);
-    (*sqe).__bindgen_anon_3.msg_flags = flags as u32;
+    sqe.__bindgen_anon_3.msg_flags = flags as u32;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_recv_multishot(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_recv_multishot(
+    sqe: &mut io_uring_sqe,
     sockfd: i32,
-    buf: *mut c_void,
+    buf: *mut (),
     len: usize,
     flags: i32,
 ) {
     io_uring_prep_recv(sqe, sockfd, buf, len, flags);
-    (*sqe).ioprio |= IORING_RECV_MULTISHOT as u16;
+    sqe.ioprio |= IORING_RECV_MULTISHOT as u16;
 }
 
 // TODO: recvmsg helpers, openat2, epollctl, provide_buffers, remove_buffers, shutdown, unlink,
 // rename, sync_file_range, mkdir, symlink, link
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_msg_ring_cqe_flags(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_msg_ring_cqe_flags(
+    sqe: &mut io_uring_sqe,
     fd: i32,
     len: u32,
     data: u64,
@@ -795,29 +903,19 @@ pub unsafe fn io_uring_prep_msg_ring_cqe_flags(
     cqe_flags: u32,
 ) {
     io_uring_prep_rw(IORING_OP_MSG_RING, sqe, fd, ptr::null(), len, data);
-    (*sqe).__bindgen_anon_3.msg_ring_flags = IORING_MSG_RING_FLAGS_PASS | flags;
-    (*sqe).__bindgen_anon_5.file_index = cqe_flags;
+    sqe.__bindgen_anon_3.msg_ring_flags = IORING_MSG_RING_FLAGS_PASS | flags;
+    sqe.__bindgen_anon_5.file_index = cqe_flags;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_msg_ring(
-    sqe: *mut io_uring_sqe,
-    fd: i32,
-    len: u32,
-    data: u64,
-    flags: u32,
-) {
+pub fn io_uring_prep_msg_ring(sqe: &mut io_uring_sqe, fd: i32, len: u32, data: u64, flags: u32) {
     io_uring_prep_rw(IORING_OP_MSG_RING, sqe, fd, ptr::null(), len, data);
-    (*sqe).__bindgen_anon_3.msg_ring_flags = flags;
+    sqe.__bindgen_anon_3.msg_ring_flags = flags;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_msg_ring_fd(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_msg_ring_fd(
+    sqe: &mut io_uring_sqe,
     fd: i32,
     source_fd: i32,
     target_fd: i32,
@@ -828,25 +926,23 @@ pub unsafe fn io_uring_prep_msg_ring_fd(
         IORING_OP_MSG_RING,
         sqe,
         fd,
-        IORING_MSG_SEND_FD as uintptr_t as *mut c_void,
+        IORING_MSG_SEND_FD as uintptr_t as _,
         0,
         data,
     );
-    (*sqe).__bindgen_anon_6.__bindgen_anon_1.as_mut().addr3 = source_fd as u64;
+    unsafe { sqe.__bindgen_anon_6.__bindgen_anon_1.as_mut().addr3 = source_fd as u64 };
     let target_fd = if target_fd == IORING_FILE_INDEX_ALLOC {
         target_fd - 1
     } else {
         target_fd
     };
     io_uring_set_target_fixed_file(sqe, target_fd as u32);
-    (*sqe).__bindgen_anon_3.msg_ring_flags = flags;
+    sqe.__bindgen_anon_3.msg_ring_flags = flags;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_msg_ring_fd_alloc(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_msg_ring_fd_alloc(
+    sqe: &mut io_uring_sqe,
     fd: i32,
     source_fd: i32,
     data: u64,
@@ -857,11 +953,9 @@ pub unsafe fn io_uring_prep_msg_ring_fd_alloc(
 
 // TODO: xattr
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_socket(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_socket(
+    sqe: &mut io_uring_sqe,
     domain: i32,
     r#type: i32,
     protocol: i32,
@@ -875,14 +969,12 @@ pub unsafe fn io_uring_prep_socket(
         protocol as u32,
         r#type as u64,
     );
-    (*sqe).__bindgen_anon_3.rw_flags = flags as i32;
+    sqe.__bindgen_anon_3.rw_flags = flags as i32;
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_socket_direct(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_socket_direct(
+    sqe: &mut io_uring_sqe,
     domain: i32,
     r#type: i32,
     protocol: i32,
@@ -898,11 +990,9 @@ pub unsafe fn io_uring_prep_socket_direct(
     io_uring_set_target_fixed_file(sqe, file_index);
 }
 
-/// # Safety
-/// `sqe` must point to a valid and initialized `io_uring_sqe`
 #[inline]
-pub unsafe fn io_uring_prep_socket_direct_alloc(
-    sqe: *mut io_uring_sqe,
+pub fn io_uring_prep_socket_direct_alloc(
+    sqe: &mut io_uring_sqe,
     domain: i32,
     r#type: i32,
     protocol: i32,
@@ -1006,7 +1096,7 @@ unsafe fn io_uring_peek_cqe_internal(
             if (*cqe).res < 0 {
                 err = (*cqe).res;
             }
-            io_uring_cq_advance(ring, 1);
+            // io_uring_cq_advance(ring, 1);
 
             if err == 0 {
                 continue;
@@ -1126,22 +1216,22 @@ pub unsafe fn io_uring_buf_ring_advance(br: *mut io_uring_buf_ring, count: i32) 
 /// `br` must point to a valid and initialized `io_uring_buf_ring`
 #[inline]
 unsafe fn io_uring_buf_ring_cq_advance_internal(
-    ring: *mut io_uring,
-    br: *mut io_uring_buf_ring,
+    cq: &mut io_uring_cq,
+    br: &mut io_uring_buf_ring,
     cq_count: i32,
     buf_count: i32,
 ) {
-    (*br).__bindgen_anon_1.__bindgen_anon_1.as_mut().tail += buf_count as u16;
-    io_uring_cq_advance(ring, cq_count as u32);
+    br.__bindgen_anon_1.__bindgen_anon_1.as_mut().tail += buf_count as u16;
+    io_uring_cq_advance(cq, cq_count as u32);
 }
 
 /// # Safety
 /// `br` must point to a valid and initialized `io_uring_buf_ring`
 #[inline]
 pub unsafe fn io_uring_buf_ring_cq_advance(
-    ring: *mut io_uring,
-    br: *mut io_uring_buf_ring,
+    cq: &mut io_uring_cq,
+    br: &mut io_uring_buf_ring,
     count: i32,
 ) {
-    io_uring_buf_ring_cq_advance_internal(ring, br, count, count)
+    io_uring_buf_ring_cq_advance_internal(cq, br, count, count)
 }
