@@ -5,7 +5,9 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 license.workspace = true
+description = "HTTP reverse proxy and web server"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+rask-core = { version = "0.1.0", path = "../rask-core" }
