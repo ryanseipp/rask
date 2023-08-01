@@ -209,10 +209,16 @@ dependencies = [
 [[package]]
 name = "rask-proxy"
 version = "0.1.0"
+dependencies = [
+ "rask-core",
+]
 
 [[package]]
 name = "rask-web"
 version = "0.1.0"
+dependencies = [
+ "rask-core",
+]
 
 [[package]]
 name = "regex"
