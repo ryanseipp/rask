@@ -2,6 +2,8 @@
 name = "rask-liburing-sys"
 version = "2.4.0"
 edition = "2021"
+license = "LGPL-2.1-only AND MIT"
+description = "Rust bindings to liburing"
 
 [dependencies]
 libc = { workspace = true }
