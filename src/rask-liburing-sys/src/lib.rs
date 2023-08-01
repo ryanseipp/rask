@@ -1005,53 +1005,55 @@ pub fn io_uring_prep_socket_direct_alloc(
 /// # Safety
 /// `ring` must point to a valid and initialized `io_uring`
 #[inline]
-pub unsafe fn io_uring_sq_ready(ring: *const io_uring) -> u32 {
-    let mut khead: u32 = (*ring).sq.khead.read_volatile();
+pub unsafe fn io_uring_sq_ready(ring: &io_uring) -> u32 {
+    let mut khead: u32 = ring.sq.khead.read_volatile();
 
-    if (*ring).flags & IORING_SETUP_SQPOLL == 0 {
-        khead = io_uring_smp_load_acquire((*ring).sq.khead);
+    if ring.flags & IORING_SETUP_SQPOLL == 0 {
+        khead = io_uring_smp_load_acquire(ring.sq.khead);
     }
 
-    (*ring).sq.sqe_tail - khead
+    ring.sq.sqe_tail - khead
 }
 
 /// # Safety
 /// `ring` must point to a valid and initialized `io_uring`
 #[inline]
-pub unsafe fn io_uring_sq_space_left(ring: *const io_uring) -> u32 {
-    (*ring).sq.ring_entries - io_uring_sq_ready(ring)
+pub unsafe fn io_uring_sq_space_left(ring: &io_uring) -> u32 {
+    ring.sq.ring_entries - io_uring_sq_ready(ring)
 }
 
 /// # Safety
 /// `ring` must point to a valid and initialized `io_uring`
 #[inline]
-pub unsafe fn io_uring_sqring_wait(ring: *mut io_uring) -> i32 {
-    if (*ring).flags & IORING_SETUP_SQPOLL == 0 || io_uring_sq_space_left(ring) > 0 {
+pub unsafe fn io_uring_sqring_wait(ring: &mut io_uring) -> i32 {
+    if ring.flags & IORING_SETUP_SQPOLL == 0 || io_uring_sq_space_left(ring) > 0 {
         0
     } else {
         __io_uring_sqring_wait(ring)
     }
 }
 
-/// # Safety
-/// `ring` must point to a valid and initialized `io_uring`
 #[inline]
-pub unsafe fn io_uring_cq_ready(ring: *const io_uring) -> u32 {
-    io_uring_smp_load_acquire((*ring).cq.ktail) - *(*ring).cq.khead
+pub fn io_uring_cq_ready(cq: &io_uring_cq) -> u32 {
+    let tail: *const AtomicU32 = cq.ktail.cast();
+
+    // SAFETY: io_uring_cq was initialized by kernel and has valid references for khead and ktail
+    unsafe { (*tail).load(Ordering::Acquire) - *cq.khead }
+}
+
+#[inline]
+pub fn io_uring_cq_has_overflown(sq: &io_uring_sq) -> bool {
+    let kflags: *const AtomicU32 = sq.kflags.cast();
+
+    // SAFETY: io_uring_sq was initialized by kernel and has valid references for kflags
+    unsafe { (*kflags).load(Ordering::Relaxed) & IORING_SQ_CQ_OVERFLOW > 0 }
 }
 
 /// # Safety
-/// `ring` must point to a valid and initialized `io_uring`
-#[inline]
-pub unsafe fn io_uring_cq_has_overflown(ring: *const io_uring) -> bool {
-    io_uring_read_once((*ring).sq.kflags) & IORING_SQ_CQ_OVERFLOW > 0
-}
-
-/// # Safety
-/// `ring` must point to a valid and initialized `io_uring`
+/// honestly idk just be valid
 #[inline]
 pub unsafe fn io_uring_wait_cqe_nr(
-    ring: *mut io_uring,
+    ring: &mut io_uring,
     cqe_ptr: *mut *mut io_uring_cqe,
     wait_nr: u32,
 ) -> i32 {
@@ -1118,7 +1120,7 @@ unsafe fn io_uring_peek_cqe_internal(
 /// # Safety
 /// `ring` must point to a valid and initialized `io_uring`
 #[inline]
-pub unsafe fn io_uring_peek_cqe(ring: *mut io_uring, cqe_ptr: *mut *mut io_uring_cqe) -> i32 {
+pub unsafe fn io_uring_peek_cqe(ring: &mut io_uring, cqe_ptr: *mut *mut io_uring_cqe) -> i32 {
     if io_uring_peek_cqe_internal(ring, cqe_ptr, ptr::null_mut()) == 0 && !cqe_ptr.is_null() {
         return 0;
     }
@@ -1129,7 +1131,7 @@ pub unsafe fn io_uring_peek_cqe(ring: *mut io_uring, cqe_ptr: *mut *mut io_uring
 /// # Safety
 /// `ring` must point to a valid and initialized `io_uring`
 #[inline]
-pub unsafe fn io_uring_wait_cqe(ring: *mut io_uring, cqe_ptr: *mut *mut io_uring_cqe) -> i32 {
+pub unsafe fn io_uring_wait_cqe(ring: &mut io_uring, cqe_ptr: *mut *mut io_uring_cqe) -> i32 {
     if io_uring_peek_cqe_internal(ring, cqe_ptr, ptr::null_mut()) == 0 && !cqe_ptr.is_null() {
         return 0;
     }
@@ -1137,34 +1139,35 @@ pub unsafe fn io_uring_wait_cqe(ring: *mut io_uring, cqe_ptr: *mut *mut io_uring
     io_uring_wait_cqe_nr(ring, cqe_ptr, 1)
 }
 
-/// # Safety
-/// `ring` must point to a valid and initialized `io_uring`
 #[inline]
-pub unsafe fn io_uring_get_sqe(ring: *mut io_uring) -> *mut io_uring_sqe {
-    let sq: *mut io_uring_sq = ptr::addr_of_mut!((*ring).sq);
-    let next = (*sq).sqe_tail + 1;
-    let mut shift = 0;
+pub fn io_uring_get_sqe(ring: &mut io_uring) -> Option<&mut io_uring_sqe> {
+    unsafe {
+        let sq: &mut io_uring_sq = &mut ring.sq;
+        let next = sq.sqe_tail + 1;
+        let mut shift = 0;
 
-    if (*ring).flags & IORING_SETUP_SQE128 > 0 {
-        shift = 1;
+        if ring.flags & IORING_SETUP_SQE128 > 0 {
+            shift = 1;
+        }
+
+        let head = if ring.flags & IORING_SETUP_SQPOLL == 0 {
+            io_uring_read_once(sq.khead)
+        } else {
+            io_uring_smp_load_acquire(sq.khead)
+        };
+
+        if next - head <= sq.ring_entries {
+            let sqe = sq
+                .sqes
+                .offset(((sq.sqe_tail & sq.ring_mask) << shift) as isize);
+
+            sq.sqe_tail = next;
+
+            return Some(&mut *sqe);
+        }
+
+        None
     }
-    let head = if (*ring).flags & IORING_SETUP_SQPOLL == 0 {
-        io_uring_read_once((*sq).khead)
-    } else {
-        io_uring_smp_load_acquire((*sq).khead)
-    };
-
-    if next - head <= (*sq).ring_entries {
-        let sqe = (*sq)
-            .sqes
-            .offset((((*sq).sqe_tail & (*sq).ring_mask) << shift) as isize);
-
-        (*sq).sqe_tail = next;
-
-        return sqe;
-    }
-
-    ptr::null_mut()
 }
 
 pub fn io_uring_buf_ring_mask(ring_entries: u32) -> i32 {

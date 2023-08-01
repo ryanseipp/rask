@@ -1,5 +1,5 @@
 [package]
-name = "liburing-sys"
+name = "rask-liburing-sys"
 version = "2.4.0"
 edition = "2021"
 

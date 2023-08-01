@@ -1,6 +1,6 @@
 [package]
-name = "liburing"
-version.workspace = true
+name = "rask-liburing"
+version = "2.4.0"
 edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -9,6 +9,6 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-liburing-sys = { path = "../liburing-sys" }
+rask-liburing-sys = { version = "2.4.0", path = "../rask-liburing-sys" }
 libc = { workspace = true }
 bitflags = "2.3.3"

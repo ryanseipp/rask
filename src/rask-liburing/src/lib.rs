@@ -12,15 +12,21 @@
 
 //! An idiomatic Rust wrapper around liburing-sys
 
+mod squeue;
+pub use squeue::*;
+
 mod completion_entry;
 pub use completion_entry::*;
 
 mod submission_entry;
 pub use submission_entry::*;
 
+mod completion_queue;
+pub use completion_queue::*;
+
 use std::{io, mem::MaybeUninit, ptr};
 
-use liburing_sys::{
+use rask_liburing_sys::{
     io_uring, io_uring_enter, io_uring_get_sqe, io_uring_queue_exit, io_uring_queue_init,
     io_uring_sq,
 };
@@ -58,12 +64,15 @@ impl IoUring {
 
     /// Get the next available submission queue entry from the submission queue belonging to this ring.
     pub fn get_sqe(&mut self) -> Result<SubmissionEntry<'_>, SQFullError> {
-        let entry = unsafe { io_uring_get_sqe(ptr::addr_of_mut!(self.inner)) };
-        let entry = unsafe { entry.as_mut() }.ok_or(SQFullError)?;
-
+        let entry = io_uring_get_sqe(&mut self.inner).ok_or(SQFullError)?;
         self.unsubmitted += 1;
 
         Ok(SubmissionEntry::new(entry))
+    }
+
+    /// Get an iterator over CQEs
+    pub fn get_cqes(&mut self) -> CompletionQueue<'_> {
+        CompletionQueue::new(&self.inner.cq)
     }
 
     /// Informs the kernel of new SQEs, but waits for no CQEs before continuing.

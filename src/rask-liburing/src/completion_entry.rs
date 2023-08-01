@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use liburing_sys::{
+use rask_liburing_sys::{
     io_uring_cqe, io_uring_cqe_get_data64, IORING_CQE_F_BUFFER, IORING_CQE_F_MORE,
     IORING_CQE_F_NOTIF, IORING_CQE_F_SOCK_NONEMPTY,
 };

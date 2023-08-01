@@ -10,4 +10,4 @@ slab = { workspace = true }
 libc = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-liburing = { path = "../liburing" }
+rask-liburing = { version = "2.4.0", path = "../rask-liburing" }

@@ -8,9 +8,11 @@ license = "Apache-2.0"
 [workspace]
 resolver = "2"
 members = [
-    "src/liburing-sys",
-    "src/liburing",
-    "src/rask-core"
+    "src/rask-liburing-sys",
+    "src/rask-liburing",
+    "src/rask-core",
+    "src/rask-web",
+    "src/rask-proxy"
 ]
 
 [workspace.dependencies]

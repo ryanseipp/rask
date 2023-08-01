@@ -113,23 +113,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "liburing"
-version = "0.1.0"
-dependencies = [
- "bitflags",
- "libc",
- "liburing-sys",
-]
-
-[[package]]
-name = "liburing-sys"
-version = "2.4.0"
-dependencies = [
- "bindgen",
- "libc",
-]
-
-[[package]]
 name = "log"
 version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -202,9 +185,34 @@ name = "rask-core"
 version = "0.1.0"
 dependencies = [
  "libc",
- "liburing",
+ "rask-liburing",
  "slab",
 ]
+
+[[package]]
+name = "rask-liburing"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "libc",
+ "rask-liburing-sys",
+]
+
+[[package]]
+name = "rask-liburing-sys"
+version = "2.4.0"
+dependencies = [
+ "bindgen",
+ "libc",
+]
+
+[[package]]
+name = "rask-proxy"
+version = "0.1.0"
+
+[[package]]
+name = "rask-web"
+version = "0.1.0"
 
 [[package]]
 name = "regex"
