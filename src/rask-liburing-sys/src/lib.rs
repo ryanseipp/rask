@@ -14,7 +14,7 @@
 //! Rust binding for liburing
 
 use std::{
-    ptr,
+    ptr::{self, NonNull},
     sync::atomic::{AtomicPtr, AtomicU32, Ordering},
 };
 
@@ -301,7 +301,7 @@ pub fn io_uring_prep_tee(
 ///
 /// Once a request has been submitted, the in-kernel state is stable. Very early kernels (5.4 and
 /// earlier) required state to be stable until the completion occurred. Applications can test for
-/// this behavior by inspecting the `IORING_FEAT_SUBMIT_STABLE` flag passed back from
+/// this behavior by inspecting the [`IORING_FEAT_SUBMIT_STABLE`] flag passed back from
 /// [`io_uring_queue_init_params`].
 #[inline]
 pub fn io_uring_prep_readv(sqe: &mut io_uring_sqe, fd: i32, iovecs: &[iovec], offset: u64) {
@@ -333,7 +333,7 @@ pub fn io_uring_prep_readv(sqe: &mut io_uring_sqe, fd: i32, iovecs: &[iovec], of
 ///
 /// Once a request has been submitted, the in-kernel state is stable. Very early kernels (5.4 and
 /// earlier) required state to be stable until the completion occurred. Applications can test for
-/// this behavior by inspecting the `IORING_FEAT_SUBMIT_STABLE` flag passed back from
+/// this behavior by inspecting the [`IORING_FEAT_SUBMIT_STABLE`] flag passed back from
 /// [`io_uring_queue_init_params`].
 #[inline]
 pub fn io_uring_prep_readv2(
@@ -393,7 +393,7 @@ pub fn io_uring_prep_read_fixed(
 ///
 /// Once a request has been submitted, the in-kernel state is stable. Very early kernels (5.4 and
 /// earlier) required state to be stable until the completion occurred. Applications can test for
-/// this behavior by inspecting the `IORING_FEAT_SUBMIT_STABLE` flag passed back from
+/// this behavior by inspecting the [`IORING_FEAT_SUBMIT_STABLE`] flag passed back from
 /// [`io_uring_queue_init_params`].
 #[inline]
 pub fn io_uring_prep_writev(sqe: &mut io_uring_sqe, fd: i32, iovecs: &[iovec], offset: u64) {
@@ -425,7 +425,7 @@ pub fn io_uring_prep_writev(sqe: &mut io_uring_sqe, fd: i32, iovecs: &[iovec], o
 ///
 /// Once a request has been submitted, the in-kernel state is stable. Very early kernels (5.4 and
 /// earlier) required state to be stable until the completion occurred. Applications can test for
-/// this behavior by inspecting the `IORING_FEAT_SUBMIT_STABLE` flag passed back from
+/// this behavior by inspecting the [`IORING_FEAT_SUBMIT_STABLE`] flag passed back from
 /// [`io_uring_queue_init_params`].
 #[inline]
 pub fn io_uring_prep_writev2(
@@ -475,7 +475,7 @@ pub fn io_uring_prep_write_fixed(
 /// request has been successfully submitted. It need not remain valid until completion.
 /// Once a request has been submitted, the in-kernel state is stable. Very early kernels (5.4 and
 /// earlier) required state to be stable until the completion occurred. Applications can test for
-/// this behavior by inspecting the `IORING_FEAT_SUBMIT_STABLE` flag passed back from
+/// this behavior by inspecting the [`IORING_FEAT_SUBMIT_STABLE`] flag passed back from
 /// [`io_uring_queue_init_params`].
 #[inline]
 pub fn io_uring_prep_recvmsg(sqe: &mut io_uring_sqe, fd: i32, msg: *mut msghdr, flags: u32) {
@@ -490,10 +490,10 @@ pub fn io_uring_prep_recvmsg(sqe: &mut io_uring_sqe, fd: i32, msg: *mut msghdr, 
 /// flags in the `flags` argument.
 ///
 /// Allows the application to issue a single receive request, which repeatedly posts a CQE when
-/// data is available. It requires the `IOSQE_BUFFER_SELECT` flag to be set and no `MSG_WAITALL`
+/// data is available. It requires the [`IOSQE_BUFFER_SELECT`] flag to be set and no `MSG_WAITALL`
 /// flag to be set. Therefore each CQE will take a buffer out of a provided buffer pool for
 /// receiving. The application should check the flags of each CQE, regardless of its result. If a
-/// posted CQE does not have the `IORING_CQE_F_MORE` flag set then the multishot receive will be
+/// posted CQE does not have the [`IORING_CQE_F_MORE`] flag set then the multishot receive will be
 /// done and the application should issue a new request.
 ///
 /// Unlike [`recvmsg(2)`](https://man.archlinux.org/man/recvmsg.2), multishot recvmsg will prepend
@@ -507,16 +507,16 @@ pub fn io_uring_prep_recvmsg(sqe: &mut io_uring_sqe, fd: i32, msg: *mut msghdr, 
 /// request has been successfully submitted. It need not remain valid until completion.
 /// Once a request has been submitted, the in-kernel state is stable. Very early kernels (5.4 and
 /// earlier) required state to be stable until the completion occurred. Applications can test for
-/// this behavior by inspecting the `IORING_FEAT_SUBMIT_STABLE` flag passed back from
+/// this behavior by inspecting the [`IORING_FEAT_SUBMIT_STABLE`] flag passed back from
 /// [`io_uring_queue_init_params`].
 #[inline]
 pub fn io_uring_prep_recvmsg_multishot(
     sqe: &mut io_uring_sqe,
     fd: i32,
-    msg: *mut msghdr,
+    msg: NonNull<msghdr>,
     flags: u32,
 ) {
-    io_uring_prep_recvmsg(sqe, fd, msg, flags);
+    io_uring_prep_recvmsg(sqe, fd, msg.as_ptr().cast(), flags);
     sqe.ioprio |= IORING_RECV_MULTISHOT as u16;
 }
 
@@ -527,39 +527,71 @@ pub fn io_uring_prep_recvmsg_multishot(
 /// flags in the `flags` argument.
 ///
 /// # Notes
-/// Using `IOSQE_IO_LINK` with this request type requires the setting of `MSG_WAITALL` in the flags
-/// argument, as a short send isn't considered an error condition without that being set.
+/// Using [`IOSQE_IO_LINK`] with this request type requires the setting of [`MSG_WAITALL`] in the
+/// flags argument, as a short send isn't considered an error condition without that being set.
 ///
 /// As with any request that passes in data in a struct, that data must remain valid until the
 /// request has been successfully submitted. It need not remain valid until completion.
 /// Once a request has been submitted, the in-kernel state is stable. Very early kernels (5.4 and
 /// earlier) required state to be stable until the completion occurred. Applications can test for
-/// this behavior by inspecting the `IORING_FEAT_SUBMIT_STABLE` flag passed back from
+/// this behavior by inspecting the [`IORING_FEAT_SUBMIT_STABLE`] flag passed back from
 /// [`io_uring_queue_init_params`].
 #[inline]
-pub fn io_uring_prep_sendmsg(sqe: &mut io_uring_sqe, fd: i32, msg: *const msghdr, flags: u32) {
-    io_uring_prep_rw(IORING_OP_SENDMSG, sqe, fd, msg.cast(), 1, 0);
+pub fn io_uring_prep_sendmsg(sqe: &mut io_uring_sqe, fd: i32, msg: NonNull<msghdr>, flags: u32) {
+    io_uring_prep_rw(IORING_OP_SENDMSG, sqe, fd, msg.as_ptr().cast(), 1, 0);
     sqe.__bindgen_anon_3.msg_flags = flags;
 }
 
+/// Prepares a poll request
+///
+/// The submission queue entry is setup to use the file descriptor `fd` that should get polled,
+/// with the events desired specified in the `poll_mask` argument.
+///
+/// When the specified event has triggered, a completion CQE is posted and no more events will be
+/// generated by the poll request.
 #[inline]
 pub fn io_uring_prep_poll_add(sqe: &mut io_uring_sqe, fd: i32, poll_mask: u32) {
     io_uring_prep_rw(IORING_OP_POLL_ADD, sqe, fd, ptr::null(), 0, 0);
     sqe.__bindgen_anon_3.poll32_events = poll_mask.to_le();
 }
 
+/// Prepares a poll request
+///
+/// The submission queue entry is setup to use the file descriptor `fd` that should get polled,
+/// with the events desired specified in the `poll_mask` argument.
+///
+/// Behaves identically to [`io_uring_prep_poll_add()`] in terms of events, but persists across
+/// notifications and will repeatedly post notifications for the same registration. A CQE posted
+/// from a multishot poll request will have [`IORING_CQE_F_MORE`] set in the CQE flags member,
+/// indicating that the application should expect more completions from this request. If the
+/// multishot poll request gets terminater or experiences an error, this flag will not be set in
+/// the CQE. If this happens, the application should not expect further CQEs from the original
+/// request and must reissue a new one if it still wishes to get notifications on this file
+/// descriptor.
 #[inline]
 pub fn io_uring_prep_poll_multishot(sqe: &mut io_uring_sqe, fd: i32, poll_mask: u32) {
     io_uring_prep_poll_add(sqe, fd, poll_mask);
     sqe.len = IORING_POLL_ADD_MULTI;
 }
 
+/// Prepares a poll removal request
+///
+/// The submission queue entry is setup to remove a poll request identified by `user_data`.
+///
+/// Works like [`io_uring_prep_cancel()`] except only looks for poll requests. Apart from that,
+/// behavior is identical.
 #[inline]
 pub fn io_uring_prep_poll_remove(sqe: &mut io_uring_sqe, user_data: u64) {
     io_uring_prep_rw(IORING_OP_POLL_REMOVE, sqe, -1, ptr::null(), 0, 0);
     sqe.__bindgen_anon_2.addr = user_data
 }
 
+/// Prepares a poll update request
+///
+/// The submission queue entry is setup to update a poll request identified by `old_user_data`,
+/// replacing it with the `new_user_data` information. The `poll_mask` arguments contains the new
+/// mask to use for the poll request, and flags argument contains modifier flags telling io_uring
+/// what fields to update.
 #[inline]
 pub fn io_uring_prep_poll_update(
     sqe: &mut io_uring_sqe,
@@ -580,23 +612,79 @@ pub fn io_uring_prep_poll_update(
     sqe.__bindgen_anon_3.poll32_events = poll_mask.to_le();
 }
 
+/// Prepares an fsync request
+///
+/// The submission queue entry is setup to use the file descriptor `fd` that should get synced,
+/// with the modifier flags indicated by the `flags` argument.
+///
+/// By default, this acts like an [`fsync(2)`](https://man.archlinux.org/man/fsync.2) operation,
+/// which is the default behavior. If [`IORING_FSYNC_DATASYNC`] is set in the flags argument, then
+/// it behaves like [`fdatasync(2)`](https://man.archlinux.org/man/fdatasync.2). If no range is
+/// specified, the fd will be synced from 0 to end-of-file.
+///
+/// It's possible to specify a range to sync, if one is desired. If the `off` field of the SQE is
+/// set to non-zero, then that indicates the offset to start syncing at. If len is set in the SQE,
+/// then that indicates the size in bytes to sync from the offset. Note that these fields are not
+/// accepted by this helper, so they have to be set manually in the SQE after calling this prep
+/// helper.
 #[inline]
 pub fn io_uring_prep_fsync(sqe: &mut io_uring_sqe, fd: i32, fsync_flags: u32) {
     io_uring_prep_rw(IORING_OP_FSYNC, sqe, fd, ptr::null(), 0, 0);
     sqe.__bindgen_anon_3.fsync_flags = fsync_flags;
 }
 
+/// Prepares a nop (no operation) request
+///
+/// The submission queue entry sqe does not require any additional setup.
 #[inline]
 pub fn io_uring_prep_nop(sqe: &mut io_uring_sqe) {
     io_uring_prep_rw(IORING_OP_NOP, sqe, -1, ptr::null(), 0, 0);
 }
 
+/// Prepares a timeout request
+///
+/// The submission queue entry is setup to arm a timeout specified by `ts` and with a timeout count
+/// of `count` completion entries. The `flags` argument holds modifier flags for the request.
+///
+/// This request type can be used as a timeout waking anyone sleeping for events on the CQ ring.
+/// The flags argument may contain:
+/// * [`IORING_TIMEOUT_ABS`]: The value specified in `ts` is an absolute value rather than a
+/// relative one.
+/// * [`IORING_TIMEOUT_BOOTTIME`]: The boottime clock source should be used.
+/// * [`IORING_TIMEOUT_REALTIME`]: The realtime clock source should be used.
+/// * [`IORING_TIMEOUT_ETIME_SUCCESS`]: Consider an expired timeout a success in terms of the
+/// posted completion. Normally a timeout that triggers would return in a -ETIME CQE res value.
+/// * [`IORING_TIMEOUT_MULTISHOT`]: The request will return multiple timeout completions. The
+/// completion flag [`IORING_CQE_F_MORE`] is set if more timeouts are expected. The value specified
+/// in `count` is the number of repeats. A value of 0 means the timeout is indefinite and can only
+/// be stopped by a removal request.
+///
+/// The timeout completion event will trigger if either the specified timeout has occurred, or the
+/// specified number of events to wait for have been posted to the CQ ring.
 #[inline]
-pub fn io_uring_prep_timeout(sqe: &mut io_uring_sqe, ts: *mut timespec, count: u32, flags: u32) {
-    io_uring_prep_rw(IORING_OP_TIMEOUT, sqe, -1, ts.cast(), 1, count as u64);
+pub fn io_uring_prep_timeout(
+    sqe: &mut io_uring_sqe,
+    ts: NonNull<timespec>,
+    count: u32,
+    flags: u32,
+) {
+    io_uring_prep_rw(
+        IORING_OP_TIMEOUT,
+        sqe,
+        -1,
+        ts.as_ptr().cast(),
+        1,
+        count as u64,
+    );
     sqe.__bindgen_anon_3.timeout_flags = flags;
 }
 
+/// Cancels an existing timeout request
+///
+/// The submission queue entry is setup to arm a timeout removal specified by `user_data` and with
+/// modifier flags given by `flags`.
+///
+/// The timeout remove command does not currently accept any flags.
 #[inline]
 pub fn io_uring_prep_timeout_remove(sqe: &mut io_uring_sqe, user_data: u64, flags: u32) {
     io_uring_prep_rw(IORING_OP_TIMEOUT_REMOVE, sqe, -1, ptr::null(), 0, 0);
@@ -604,18 +692,46 @@ pub fn io_uring_prep_timeout_remove(sqe: &mut io_uring_sqe, user_data: u64, flag
     sqe.__bindgen_anon_3.timeout_flags = flags;
 }
 
+/// Prepares a timeout update request
+///
+/// The submission queue entry is setup to arm a timeout update specified by `user_data` and with
+/// modifier flags given by `flags`. Additionally the update request includes a `ts` structure,
+/// which contains new timeout information.
+///
+/// The flags member may contain a bitmask of the following values:
+/// * [`IORING_TIMEOUT_ABS`]: The value specified in `ts` is an absolute value rather than a
+/// relative one.
+/// * [`IORING_TIMEOUT_BOOTTIME`]: The boottime clock source should be used.
+/// * [`IORING_TIMEOUT_REALTIME`]: The realtime clock source should be used.
+/// * [`IORING_TIMEOUT_ETIME_SUCCESS`]: Consider an expired timeout a success in terms of the
+/// posted completion. Normally a timeout that triggers would return in a -ETIME CQE res value.
 #[inline]
 pub fn io_uring_prep_timeout_update(
     sqe: &mut io_uring_sqe,
-    ts: *mut timespec,
+    ts: NonNull<timespec>,
     user_data: u64,
     flags: u32,
 ) {
-    io_uring_prep_rw(IORING_OP_TIMEOUT_REMOVE, sqe, -1, ptr::null(), 0, ts as u64);
+    io_uring_prep_rw(
+        IORING_OP_TIMEOUT_REMOVE,
+        sqe,
+        -1,
+        ptr::null(),
+        0,
+        ts.as_ptr() as u64,
+    );
     sqe.__bindgen_anon_2.addr = user_data;
     sqe.__bindgen_anon_3.timeout_flags = flags | IORING_TIMEOUT_UPDATE;
 }
 
+/// Prepares an accept request
+///
+/// The submission queue entry is setup to use the file descriptor `fd` to start accepting a
+/// connection request described by the socket address at `addr` and of structure length `addrlen`
+/// and using modifier flags in `flags`.
+///
+/// See the man page [`accept4(2)`](https://man.archlinux.org/man/accept4.2) for more details of
+/// the accept function itself.
 #[inline]
 pub fn io_uring_prep_accept(
     sqe: &mut io_uring_sqe,
@@ -633,6 +749,35 @@ fn io_uring_set_target_fixed_file(sqe: &mut io_uring_sqe, file_index: u32) {
     sqe.__bindgen_anon_5.file_index = file_index + 1;
 }
 
+/// Prepares an accept request
+///
+/// The submission queue entry is setup to use the file descriptor `fd` to start accepting a
+/// connection request described by the socket address at `addr` and of structure length `addrlen`
+/// and using modifier flags in `flags`.
+///
+/// Direct descriptors are [`io_uring`] private file descriptors. They avoid some of the overhead
+/// associated with thread shared file tables and can be used in any [`io_uring`] request that
+/// takes a file descriptor. This function creates such direct descriptors. Subsequent to their
+/// creation, they can be used by setting [`IOSQE_FIXED_FILE`] in the SQE flags member, and setting
+/// the SQE `fd` field to the direct descriptor value rather than the regular file descriptor.
+/// Direct descriptors are managed like registered files.
+///
+/// To use this function, the application must have first registered a file table of a desired size
+/// using [`io_uring_register_files()`] or [`io_uring_register_files_sparse()`]. Once registered,
+/// this allows an entry in that table to be specifically selected through the `file_index`
+/// argument. If the specified entry already contains a file, the file will first be removed from
+/// the table and closed, consistent with the behavior of updating an existing file with
+/// [`io_uring_register_files_update()`]. `file_index` can also be set to
+/// [`IORING_FILE_INDEX_ALLOC`] for this variant and an unused table index will be dynamically
+/// chosen and returned. If both forms of direct selection will be employed, specific and dynamic,
+/// see [`io_uring_register_file_alloc_range()`] for setting up the table so dynamically chosen
+/// entries are made against a different range than that targeted by specific requests.
+///
+/// When a direct descriptor accept request asks for a table slot to be dynamically chosen but
+/// there are no free entries, `-ENFILE` is returned as the CQE res.
+///
+/// See the man page [`accept4(2)`](https://man.archlinux.org/man/accept4.2) for more details of
+/// the accept function itself.
 #[inline]
 pub fn io_uring_prep_accept_direct(
     sqe: &mut io_uring_sqe,
@@ -652,6 +797,24 @@ pub fn io_uring_prep_accept_direct(
     io_uring_set_target_fixed_file(sqe, file_index);
 }
 
+/// Prepares a multishot accept request
+///
+/// The submission queue entry is setup to use the file descriptor `fd` to start accepting a
+/// connection request described by the socket address at `addr` and of structure length `addrlen`
+/// and using modifier flags in `flags`.
+///
+/// This function allows an application to issue a single accept request, which will repeatedly
+/// trigger a CQE when a connection request comes in. Like other multishot type requests, the
+/// application should look at the CQE flags and see if [`IORING_CQE_F_MORE`] is set on completion
+/// as an indication of whether or not the accept request will generate further CQEs. Note that
+/// setting `addr` and `addrlen` may not make a lot of sense, as the same value would be used for
+/// every accepted connection. This means that the data written to `addr` may be overwritten by a
+/// new connection before the application has had time to process a past connection. If the
+/// application knows that a new connection cannot come in before a previous one has been
+/// processed, it may be used as expected.
+///
+/// See the man page [`accept4(2)`](https://man.archlinux.org/man/accept4.2) for more details of
+/// the accept function itself.
 #[inline]
 pub fn io_uring_prep_multishot_accept(
     sqe: &mut io_uring_sqe,
@@ -664,6 +827,47 @@ pub fn io_uring_prep_multishot_accept(
     sqe.ioprio |= IORING_ACCEPT_MULTISHOT as u16;
 }
 
+/// Prepares an accept request
+///
+/// The submission queue entry is setup to use the file descriptor `fd` to start accepting a
+/// connection request described by the socket address at `addr` and of structure length `addrlen`
+/// and using modifier flags in `flags`.
+///
+/// Direct descriptors are [`io_uring`] private file descriptors. They avoid some of the overhead
+/// associated with thread shared file tables and can be used in any [`io_uring`] request that
+/// takes a file descriptor. This function creates such direct descriptors. Subsequent to their
+/// creation, they can be used by setting [`IOSQE_FIXED_FILE`] in the SQE flags member, and setting
+/// the SQE `fd` field to the direct descriptor value rather than the regular file descriptor.
+/// Direct descriptors are managed like registered files.
+///
+/// To use this function, the application must have first registered a file table of a desired size
+/// using [`io_uring_register_files()`] or [`io_uring_register_files_sparse()`]. Once registered,
+/// this allows an entry in that table to be specifically selected through the `file_index`
+/// argument. If the specified entry already contains a file, the file will first be removed from
+/// the table and closed, consistent with the behavior of updating an existing file with
+/// [`io_uring_register_files_update()`]. `file_index` can also be set to
+/// [`IORING_FILE_INDEX_ALLOC`] for this variant and an unused table index will be dynamically
+/// chosen and returned. This function will have an unused table index dynamically chosen and
+/// returned for each connection accepted. If both forms of direct selection will be employed,
+/// specific and dynamic, see [`io_uring_register_file_alloc_range()`] for setting up the table so
+/// dynamically chosen entries are made against a different range than that targeted by specific
+/// requests.
+///
+/// When a direct descriptor accept request asks for a table slot to be dynamically chosen but
+/// there are no free entries, `-ENFILE` is returned as the CQE res.
+///
+/// This function allows an application to issue a single accept request, which will repeatedly
+/// trigger a CQE when a connection request comes in. Like other multishot type requests, the
+/// application should look at the CQE flags and see if [`IORING_CQE_F_MORE`] is set on completion
+/// as an indication of whether or not the accept request will generate further CQEs. Note that
+/// setting `addr` and `addrlen` may not make a lot of sense, as the same value would be used for
+/// every accepted connection. This means that the data written to `addr` may be overwritten by a
+/// new connection before the application has had time to process a past connection. If the
+/// application knows that a new connection cannot come in before a previous one has been
+/// processed, it may be used as expected.
+///
+/// See the man page [`accept4(2)`](https://man.archlinux.org/man/accept4.2) for more details of
+/// the accept function itself.
 #[inline]
 pub fn io_uring_prep_multishot_accept_direct(
     sqe: &mut io_uring_sqe,
@@ -676,6 +880,26 @@ pub fn io_uring_prep_multishot_accept_direct(
     io_uring_set_target_fixed_file(sqe, (IORING_FILE_INDEX_ALLOC - 1) as u32);
 }
 
+/// Prepares a cancellation request
+///
+/// The submission queue entry is prepared to cancel an existing request identified by `user_data`.
+/// For the `flags` argument, see below.
+///
+/// This function is identical to [`io_uring_prep_cancel()`], except it takes a 64-bit integer
+/// rather than a pointer type.
+///
+/// The cancellation request will attempt to find the previously issued request identified by
+/// `user_data` and cancel it. The identifier is what the previously issued request has in their
+/// `user_data` field in the SQE.
+///
+/// By default, the first request matching the criteria given will be cancelled. This can be
+/// modified with any of the following flags passed in:
+/// * [`IORING_ASYNC_CANCEL_ALL`]: Cancel all requests that match the given criteria, rather than
+/// just cancelling the first one found.
+/// * [`IORING_ASYNC_CANCEL_FD`]: Match based on the file descriptor used in the original request
+/// rather than the `user_data`. This is what [`io_uring_prep_cancel_fd()`] sets up.
+/// * [`IORING_ASYNC_CANCEL_ANY`]: Match any request in the ring, regardless of `user_data` or file
+/// descriptor. Can be used to cancel any pending request in the ring.
 #[inline]
 pub fn io_uring_prep_cancel64(sqe: &mut io_uring_sqe, user_data: u64, flags: i32) {
     io_uring_prep_rw(IORING_OP_ASYNC_CANCEL, sqe, -1, ptr::null(), 0, 0);
@@ -683,31 +907,96 @@ pub fn io_uring_prep_cancel64(sqe: &mut io_uring_sqe, user_data: u64, flags: i32
     sqe.__bindgen_anon_3.cancel_flags = flags as u32;
 }
 
+/// Prepares a cancellation request
+///
+/// The submission queue entry is prepared to cancel an existing request identified by `user_data`.
+/// For the `flags` argument, see below.
+///
+/// This function is identical to [`io_uring_prep_cancel64()`], except it takes a pointer type
+/// rather than a 64-bit integer
+///
+/// The cancellation request will attempt to find the previously issued request identified by
+/// `user_data` and cancel it. The identifier is what the previously issued request has in their
+/// `user_data` field in the SQE.
+///
+/// By default, the first request matching the criteria given will be cancelled. This can be
+/// modified with any of the following flags passed in:
+/// * [`IORING_ASYNC_CANCEL_ALL`]: Cancel all requests that match the given criteria, rather than
+/// just cancelling the first one found.
+/// * [`IORING_ASYNC_CANCEL_FD`]: Match based on the file descriptor used in the original request
+/// rather than the `user_data`. This is what [`io_uring_prep_cancel_fd()`] sets up.
+/// * [`IORING_ASYNC_CANCEL_ANY`]: Match any request in the ring, regardless of `user_data` or file
+/// descriptor. Can be used to cancel any pending request in the ring.
 #[inline]
-pub fn io_uring_prep_cancel(sqe: &mut io_uring_sqe, user_data: *mut c_void, flags: i32) {
-    io_uring_prep_cancel64(sqe, user_data as u64, flags);
+pub fn io_uring_prep_cancel<T>(sqe: &mut io_uring_sqe, user_data: NonNull<T>, flags: i32) {
+    io_uring_prep_cancel64(sqe, user_data.as_ptr() as u64, flags);
 }
 
+/// Prepares a cancellation request
+///
+/// The submission queue entry is prepared to cancel an existing request that used the file
+/// descriptor `fd`. For the `flags` argument, see below.
+///
+/// The cancellation request will attempt to find the previously issued request that used `fd` as
+/// the file descriptor and cancel it.
+///
+/// By default, the first request matching the criteria given will be cancelled. This can be
+/// modified with any of the following flags passed in:
+/// * [`IORING_ASYNC_CANCEL_ALL`]: Cancel all requests that match the given criteria, rather than
+/// just cancelling the first one found.
+/// * [`IORING_ASYNC_CANCEL_FD`]: Match based on the file descriptor used in the original request
+/// rather than the `user_data`. This is what [`io_uring_prep_cancel_fd()`] sets up.
+/// * [`IORING_ASYNC_CANCEL_ANY`]: Match any request in the ring, regardless of `user_data` or file
+/// descriptor. Can be used to cancel any pending request in the ring.
 #[inline]
 pub fn io_uring_prep_cancel_fd(sqe: &mut io_uring_sqe, fd: i32, flags: u32) {
     io_uring_prep_rw(IORING_OP_ASYNC_CANCEL, sqe, fd, ptr::null(), 0, 0);
     sqe.__bindgen_anon_3.cancel_flags = flags | IORING_ASYNC_CANCEL_FD;
 }
 
+/// Prepares a timeout request for linked SQEs
+///
+/// The submission queue entry sets up a timeout specified by `ts`. The `flags` argument holds
+/// modifier flags for the timeout behavior of the request.
+///
+/// The `ts` argument must be filled in with the appropriate information for the timeout.
+///
+/// The flags argument may contain:
+/// * [`IORING_TIMEOUT_ABS`]: The value specified in `ts` is an absolute value rather than a
+/// relative one.
+/// * [`IORING_TIMEOUT_BOOTTIME`]: The boottime clock source should be used.
+/// * [`IORING_TIMEOUT_REALTIME`]: The realtime clock source should be used.
+/// * [`IORING_TIMEOUT_ETIME_SUCCESS`]: Consider an expired timeout a success in terms of the
+/// posted completion. Normally a timeout that triggers would return in a -ETIME CQE res value.
+///
+/// It is invalid to create a chain (linked SQEs) consisting only of a link timeout request. If all
+/// the requests in the chain are completed before timeout, then the link timeout request gets
+/// cancelled. Upon timeout, all the uncompleted requests in the chain get cancelled.
 #[inline]
-pub fn io_uring_prep_link_timeout(sqe: &mut io_uring_sqe, ts: *mut timespec, flags: u32) {
-    io_uring_prep_rw(IORING_OP_LINK_TIMEOUT, sqe, -1, ts.cast(), 1, 0);
+pub fn io_uring_prep_link_timeout(sqe: &mut io_uring_sqe, ts: NonNull<timespec>, flags: u32) {
+    io_uring_prep_rw(IORING_OP_LINK_TIMEOUT, sqe, -1, ts.as_ptr().cast(), 1, 0);
     sqe.__bindgen_anon_3.timeout_flags = flags;
 }
 
+/// Prepares a connect request
+///
+/// The submission queue entry is setup to use the file descriptor `fd` to start connecting to the
+/// destination described by the socket address at `addr` and of structure length `addrlen`.
 #[inline]
 pub fn io_uring_prep_connect(
     sqe: &mut io_uring_sqe,
     fd: i32,
-    addr: *const sockaddr,
+    addr: NonNull<sockaddr>,
     addrlen: socklen_t,
 ) {
-    io_uring_prep_rw(IORING_OP_CONNECT, sqe, fd, addr.cast(), 0, addrlen as u64);
+    io_uring_prep_rw(
+        IORING_OP_CONNECT,
+        sqe,
+        fd,
+        addr.as_ptr().cast(),
+        0,
+        addrlen as u64,
+    );
 }
 
 #[inline]
@@ -778,42 +1067,51 @@ pub fn io_uring_prep_close_direct(sqe: &mut io_uring_sqe, file_index: u32) {
 }
 
 #[inline]
-pub fn io_uring_prep_read(sqe: &mut io_uring_sqe, fd: i32, buf: *mut (), nbytes: u32, offset: u64) {
-    io_uring_prep_rw(IORING_OP_READ, sqe, fd, buf, nbytes, offset);
+pub fn io_uring_prep_read(sqe: &mut io_uring_sqe, fd: i32, buf: &mut [u8], offset: u64) {
+    io_uring_prep_rw(
+        IORING_OP_READ,
+        sqe,
+        fd,
+        buf.as_mut_ptr().cast(),
+        buf.len() as u32,
+        offset,
+    );
 }
 
 #[inline]
-pub fn io_uring_prep_write(
-    sqe: &mut io_uring_sqe,
-    fd: i32,
-    buf: *mut (),
-    nbytes: u32,
-    offset: u64,
-) {
-    io_uring_prep_rw(IORING_OP_WRITE, sqe, fd, buf, nbytes, offset);
+pub fn io_uring_prep_write(sqe: &mut io_uring_sqe, fd: i32, buf: &[u8], offset: u64) {
+    io_uring_prep_rw(
+        IORING_OP_WRITE,
+        sqe,
+        fd,
+        buf.as_ptr().cast(),
+        buf.len() as u32,
+        offset,
+    );
 }
 
 // TODO: statx fadvise madvise
 
 #[inline]
-pub fn io_uring_prep_send(
-    sqe: &mut io_uring_sqe,
-    sockfd: i32,
-    buf: *const (),
-    len: usize,
-    flags: i32,
-) {
-    io_uring_prep_rw(IORING_OP_SEND, sqe, sockfd, buf, len as u32, 0);
+pub fn io_uring_prep_send(sqe: &mut io_uring_sqe, sockfd: i32, buf: &[u8], flags: i32) {
+    io_uring_prep_rw(
+        IORING_OP_SEND,
+        sqe,
+        sockfd,
+        buf.as_ptr().cast(),
+        buf.len() as u32,
+        0,
+    );
     sqe.__bindgen_anon_3.msg_flags = flags as u32;
 }
 
 #[inline]
 pub fn io_uring_prep_send_set_addr(
     sqe: &mut io_uring_sqe,
-    dest_addr: *const sockaddr,
+    dest_addr: NonNull<sockaddr>,
     addr_len: u16,
 ) {
-    sqe.__bindgen_anon_1.addr2 = dest_addr as u64;
+    sqe.__bindgen_anon_1.addr2 = dest_addr.as_ptr() as u64;
     sqe.__bindgen_anon_5.__bindgen_anon_1.addr_len = addr_len;
 }
 
@@ -821,13 +1119,12 @@ pub fn io_uring_prep_send_set_addr(
 pub fn io_uring_prep_sendto(
     sqe: &mut io_uring_sqe,
     sockfd: i32,
-    buf: *const (),
-    len: usize,
+    buf: &mut [u8],
     flags: i32,
-    addr: *const sockaddr,
+    addr: NonNull<sockaddr>,
     addr_len: u16,
 ) {
-    io_uring_prep_send(sqe, sockfd, buf, len, flags);
+    io_uring_prep_send(sqe, sockfd, buf, flags);
     io_uring_prep_send_set_addr(sqe, addr, addr_len);
 }
 
@@ -835,12 +1132,18 @@ pub fn io_uring_prep_sendto(
 pub fn io_uring_prep_send_zc(
     sqe: &mut io_uring_sqe,
     sockfd: i32,
-    buf: *const (),
-    len: usize,
+    buf: &mut [u8],
     flags: i32,
     zc_flags: u32,
 ) {
-    io_uring_prep_rw(IORING_OP_SEND_ZC, sqe, sockfd, buf, len as u32, 0);
+    io_uring_prep_rw(
+        IORING_OP_SEND_ZC,
+        sqe,
+        sockfd,
+        buf.as_ptr().cast(),
+        buf.len() as u32,
+        0,
+    );
     sqe.__bindgen_anon_3.msg_flags = flags as u32;
     sqe.ioprio = zc_flags as u16;
 }
@@ -849,32 +1152,32 @@ pub fn io_uring_prep_send_zc(
 pub fn io_uring_prep_send_zc_fixed(
     sqe: &mut io_uring_sqe,
     sockfd: i32,
-    buf: *const (),
-    len: usize,
+    buf: &mut [u8],
     flags: i32,
     zc_flags: u32,
     buf_index: u32,
 ) {
-    io_uring_prep_send_zc(sqe, sockfd, buf, len, flags, zc_flags);
+    io_uring_prep_send_zc(sqe, sockfd, buf, flags, zc_flags);
     sqe.ioprio |= IORING_RECVSEND_FIXED_BUF as u16;
     sqe.__bindgen_anon_4.buf_index = buf_index as u16;
 }
 
 #[inline]
-pub fn io_uring_prep_sendmsg_zc(sqe: &mut io_uring_sqe, fd: i32, msg: *const msghdr, flags: u32) {
+pub fn io_uring_prep_sendmsg_zc(sqe: &mut io_uring_sqe, fd: i32, msg: NonNull<msghdr>, flags: u32) {
     io_uring_prep_sendmsg(sqe, fd, msg, flags);
     sqe.opcode = IORING_OP_SENDMSG_ZC as u8;
 }
 
 #[inline]
-pub fn io_uring_prep_recv(
-    sqe: &mut io_uring_sqe,
-    sockfd: i32,
-    buf: *mut (),
-    len: usize,
-    flags: i32,
-) {
-    io_uring_prep_rw(IORING_OP_RECV, sqe, sockfd, buf, len as u32, 0);
+pub fn io_uring_prep_recv(sqe: &mut io_uring_sqe, sockfd: i32, buf: &mut [u8], flags: i32) {
+    io_uring_prep_rw(
+        IORING_OP_RECV,
+        sqe,
+        sockfd,
+        buf.as_ptr().cast(),
+        buf.len() as u32,
+        0,
+    );
     sqe.__bindgen_anon_3.msg_flags = flags as u32;
 }
 
@@ -882,11 +1185,10 @@ pub fn io_uring_prep_recv(
 pub fn io_uring_prep_recv_multishot(
     sqe: &mut io_uring_sqe,
     sockfd: i32,
-    buf: *mut (),
-    len: usize,
+    buf: &mut [u8],
     flags: i32,
 ) {
-    io_uring_prep_recv(sqe, sockfd, buf, len, flags);
+    io_uring_prep_recv(sqe, sockfd, buf, flags);
     sqe.ioprio |= IORING_RECV_MULTISHOT as u16;
 }
 

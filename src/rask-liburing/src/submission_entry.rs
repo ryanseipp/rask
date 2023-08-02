@@ -81,13 +81,7 @@ impl<'a> SubmissionEntry<'a> {
     ///
     /// See [recv(2)](https://man.archlinux.org/man/recv.2)
     pub fn prep_recv(&mut self, fd: impl AsRawFd, buffer: &mut [u8]) -> &mut Self {
-        io_uring_prep_recv(
-            self.inner,
-            fd.as_raw_fd(),
-            buffer.as_mut_ptr().cast(),
-            buffer.len(),
-            0,
-        );
+        io_uring_prep_recv(self.inner, fd.as_raw_fd(), buffer, 0);
 
         self
     }
@@ -98,13 +92,7 @@ impl<'a> SubmissionEntry<'a> {
     ///
     /// See [send(2)](https://man.archlinux.org/man/send.2)
     pub fn prep_send(&mut self, fd: impl AsRawFd, buffer: &[u8]) -> &mut Self {
-        io_uring_prep_send(
-            self.inner,
-            fd.as_raw_fd(),
-            buffer.as_ptr().cast(),
-            buffer.len(),
-            0,
-        );
+        io_uring_prep_send(self.inner, fd.as_raw_fd(), buffer, 0);
 
         self
     }
