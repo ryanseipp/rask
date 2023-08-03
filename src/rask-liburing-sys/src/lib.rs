@@ -14,52 +14,16 @@
 //! Rust binding for liburing
 
 use std::{
+    ffi::OsString,
     ptr::{self, NonNull},
-    sync::atomic::{AtomicPtr, AtomicU32, Ordering},
+    sync::atomic::{AtomicU16, AtomicU32, Ordering},
 };
 
-use libc::{c_void, mode_t, msghdr, sockaddr, socklen_t, timespec, uintptr_t};
+use libc::{c_void, mode_t, msghdr, sockaddr, socklen_t, timespec};
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 const IO_URING_OP_SUPPORTED: u32 = 1u32 << 0;
-
-// #[inline]
-// unsafe fn io_uring_write_once<T>(p: *mut T, v: T) {
-//     let mut v = v;
-//     let p = AtomicPtr::from(p);
-//     p.store(ptr::addr_of_mut!(v), Ordering::Relaxed);
-// }
-
-#[inline]
-unsafe fn io_uring_read_once<T>(p: *mut T) -> T {
-    let p = AtomicPtr::from(p);
-    p.load(Ordering::Relaxed).read()
-}
-
-#[inline]
-fn io_uring_smp_store_release<T>(p: *mut T, v: T) {
-    let mut v = v;
-    let p = AtomicPtr::from(p);
-    p.store(ptr::addr_of_mut!(v), Ordering::Release);
-}
-
-#[inline]
-unsafe fn io_uring_smp_load_acquire<T>(p: *mut T) -> T {
-    let p = AtomicPtr::from(p);
-    p.load(Ordering::Acquire).read()
-}
-
-/// # Safety
-/// `p` must be a valid and initialized `io_uring_probe`
-// #[inline]
-// pub unsafe fn io_uring_opcode_supported(p: *const io_uring_probe, op: i32) -> i32 {
-//     if op as u8 > (*p).last_op {
-//         return 0;
-//     }
-//
-//     ((*p).ops.1[op as usize].flags & IO_URING_OP_SUPPORTED as u16).into()
-// }
 
 #[inline]
 pub fn io_uring_opcode_supported(probe: &io_uring_probe, op: i32) -> i32 {
@@ -83,12 +47,10 @@ pub fn io_uring_opcode_supported(probe: &io_uring_probe, op: i32) -> i32 {
 /// Must be called after [`io_uring_for_each_cqe()`].
 #[inline]
 pub fn io_uring_cq_advance(cq: &mut io_uring_cq, seen: u32) {
-    unsafe {
-        if seen > 0 {
-            let head = *cq.khead + seen;
-            let khead: *mut AtomicU32 = cq.khead.cast();
-            (*khead).store(head, Ordering::Release);
-        }
+    if seen > 0 {
+        let head = unsafe { *cq.khead } + seen;
+        let khead: &mut AtomicU32 = unsafe { &mut *cq.khead.cast() };
+        khead.store(head, Ordering::Release);
     }
 }
 
@@ -114,8 +76,8 @@ pub fn io_uring_cqe_seen(cq: &mut io_uring_cq, _cqe: io_uring_cqe) {
 /// [`io_uring_cqe_get_data`] can be called to retrieve the data pointer or value associated with
 /// the submitted request.
 #[inline]
-pub fn io_uring_sqe_set_data<T>(sqe: &mut io_uring_sqe, data: *mut T) {
-    sqe.user_data = data as u64;
+pub fn io_uring_sqe_set_data<T>(sqe: &mut io_uring_sqe, data: NonNull<T>) {
+    sqe.user_data = data.as_ptr() as u64;
 }
 
 /// Returns the [`user_data`](io_uring_cqe::user_data) with the completion queue entry as a data
@@ -129,8 +91,8 @@ pub fn io_uring_sqe_set_data<T>(sqe: &mut io_uring_sqe, data: *mut T) {
 /// [`io_uring_sqe_set_data()`]. Otherwise the return value is undefined. The caller is responsible
 /// for using the same type `T` with [`io_uring_sqe_set_data()`] and this function.
 #[inline]
-pub unsafe fn io_uring_cqe_get_data<T>(cqe: &io_uring_cqe) -> *mut T {
-    cqe.user_data as *mut T
+pub unsafe fn io_uring_cqe_get_data<T>(cqe: &io_uring_cqe) -> Option<&T> {
+    (cqe.user_data as *mut T).as_ref()
 }
 
 /// Stores a 64-bit data value with the submission queue entry.
@@ -154,8 +116,8 @@ pub fn io_uring_sqe_set_data64(sqe: &mut io_uring_sqe, data: u64) {
 /// Requires that [`user_data`](io_uring_cqe::user_data) has been set earlier with the function
 /// [`io_uring_sqe_set_data64()`]. Otherwise, the return value is undefined.
 #[inline]
-pub unsafe fn io_uring_cqe_get_data64(cqe: *const io_uring_cqe) -> u64 {
-    (*cqe).user_data
+pub unsafe fn io_uring_cqe_get_data64(cqe: &io_uring_cqe) -> u64 {
+    cqe.user_data
 }
 
 /// Allows the caller to change the behavior of the submission queue entry by specifying flags. It
@@ -211,11 +173,11 @@ pub fn io_uring_sqe_set_flags(sqe: &mut io_uring_sqe, flags: u32) {
 }
 
 #[inline]
-fn io_uring_prep_rw(
+fn io_uring_prep_rw<T>(
     op: u32,
     sqe: &mut io_uring_sqe,
     fd: i32,
-    addr: *const (),
+    addr: Option<&T>,
     len: u32,
     offset: u64,
 ) {
@@ -224,7 +186,35 @@ fn io_uring_prep_rw(
     sqe.ioprio = 0;
     sqe.fd = fd;
     sqe.__bindgen_anon_1.off = offset;
-    sqe.__bindgen_anon_2.addr = addr as u64;
+    sqe.__bindgen_anon_2.addr = addr.map_or(ptr::null(), |a| a) as u64;
+    sqe.len = len;
+}
+
+#[inline]
+fn io_uring_prep_rw_buf<T>(
+    op: u32,
+    sqe: &mut io_uring_sqe,
+    fd: i32,
+    addr: Option<&[T]>,
+    offset: u64,
+) {
+    sqe.opcode = op as u8;
+    sqe.flags = 0;
+    sqe.ioprio = 0;
+    sqe.fd = fd;
+    sqe.__bindgen_anon_1.off = offset;
+    sqe.__bindgen_anon_2.addr = addr.map_or(ptr::null(), |a| a.as_ptr()) as u64;
+    sqe.len = addr.map_or(0, |a| a.len()) as u32;
+}
+
+#[inline]
+fn io_uring_prep_rw_null(op: u32, sqe: &mut io_uring_sqe, fd: i32, len: u32, offset: u64) {
+    sqe.opcode = op as u8;
+    sqe.flags = 0;
+    sqe.ioprio = 0;
+    sqe.fd = fd;
+    sqe.__bindgen_anon_1.off = offset;
+    sqe.__bindgen_anon_2.addr = ptr::null::<usize>() as u64;
     sqe.len = len;
 }
 
@@ -245,14 +235,7 @@ pub fn io_uring_prep_splice(
     nbytes: u32,
     splice_flags: u32,
 ) {
-    io_uring_prep_rw(
-        IORING_OP_SPLICE,
-        sqe,
-        fd_out,
-        ptr::null(),
-        nbytes,
-        off_out as u64,
-    );
+    io_uring_prep_rw_null(IORING_OP_SPLICE, sqe, fd_out, nbytes, off_out as u64);
 
     sqe.__bindgen_anon_2.splice_off_in = off_in as u64;
     sqe.__bindgen_anon_5.splice_fd_in = fd_in;
@@ -273,7 +256,7 @@ pub fn io_uring_prep_tee(
     nbytes: u32,
     splice_flags: u32,
 ) {
-    io_uring_prep_rw(IORING_OP_TEE, sqe, fd_out, ptr::null(), nbytes, 0);
+    io_uring_prep_rw_null(IORING_OP_TEE, sqe, fd_out, nbytes, 0);
 
     sqe.__bindgen_anon_2.splice_off_in = 0;
     sqe.__bindgen_anon_5.splice_fd_in = fd_in;
@@ -305,14 +288,7 @@ pub fn io_uring_prep_tee(
 /// [`io_uring_queue_init_params`].
 #[inline]
 pub fn io_uring_prep_readv(sqe: &mut io_uring_sqe, fd: i32, iovecs: &[iovec], offset: u64) {
-    io_uring_prep_rw(
-        IORING_OP_READV,
-        sqe,
-        fd,
-        iovecs.as_ptr().cast(),
-        iovecs.len() as u32,
-        offset,
-    )
+    io_uring_prep_rw_buf(IORING_OP_READV, sqe, fd, Some(iovecs), offset)
 }
 
 /// Prepares a vectored IO read request
@@ -361,14 +337,7 @@ pub fn io_uring_prep_read_fixed(
     offset: u64,
     buf_index: i32,
 ) {
-    io_uring_prep_rw(
-        IORING_OP_READ_FIXED,
-        sqe,
-        fd,
-        buf.as_ptr().cast(),
-        buf.len() as u32,
-        offset,
-    );
+    io_uring_prep_rw_buf(IORING_OP_READ_FIXED, sqe, fd, Some(buf), offset);
     sqe.__bindgen_anon_4.buf_index = buf_index as u16;
 }
 
@@ -397,14 +366,7 @@ pub fn io_uring_prep_read_fixed(
 /// [`io_uring_queue_init_params`].
 #[inline]
 pub fn io_uring_prep_writev(sqe: &mut io_uring_sqe, fd: i32, iovecs: &[iovec], offset: u64) {
-    io_uring_prep_rw(
-        IORING_OP_WRITEV,
-        sqe,
-        fd,
-        iovecs.as_ptr().cast(),
-        iovecs.len() as u32,
-        offset,
-    )
+    io_uring_prep_rw_buf(IORING_OP_WRITEV, sqe, fd, Some(iovecs), offset)
 }
 
 /// Prepares a vectored IO write request
@@ -453,14 +415,7 @@ pub fn io_uring_prep_write_fixed(
     offset: u64,
     buf_index: i32,
 ) {
-    io_uring_prep_rw(
-        IORING_OP_WRITE_FIXED,
-        sqe,
-        fd,
-        buf.as_mut_ptr().cast(),
-        buf.len() as u32,
-        offset,
-    );
+    io_uring_prep_rw_buf(IORING_OP_WRITE_FIXED, sqe, fd, Some(buf), offset);
     sqe.__bindgen_anon_4.buf_index = buf_index as u16;
 }
 
@@ -478,8 +433,8 @@ pub fn io_uring_prep_write_fixed(
 /// this behavior by inspecting the [`IORING_FEAT_SUBMIT_STABLE`] flag passed back from
 /// [`io_uring_queue_init_params`].
 #[inline]
-pub fn io_uring_prep_recvmsg(sqe: &mut io_uring_sqe, fd: i32, msg: *mut msghdr, flags: u32) {
-    io_uring_prep_rw(IORING_OP_RECVMSG, sqe, fd, msg.cast(), 1, 0);
+pub fn io_uring_prep_recvmsg(sqe: &mut io_uring_sqe, fd: i32, msg: &mut msghdr, flags: u32) {
+    io_uring_prep_rw(IORING_OP_RECVMSG, sqe, fd, Some(msg), 1, 0);
     sqe.__bindgen_anon_3.msg_flags = flags;
 }
 
@@ -513,10 +468,10 @@ pub fn io_uring_prep_recvmsg(sqe: &mut io_uring_sqe, fd: i32, msg: *mut msghdr, 
 pub fn io_uring_prep_recvmsg_multishot(
     sqe: &mut io_uring_sqe,
     fd: i32,
-    msg: NonNull<msghdr>,
+    msg: &mut msghdr,
     flags: u32,
 ) {
-    io_uring_prep_recvmsg(sqe, fd, msg.as_ptr().cast(), flags);
+    io_uring_prep_recvmsg(sqe, fd, msg, flags);
     sqe.ioprio |= IORING_RECV_MULTISHOT as u16;
 }
 
@@ -537,8 +492,8 @@ pub fn io_uring_prep_recvmsg_multishot(
 /// this behavior by inspecting the [`IORING_FEAT_SUBMIT_STABLE`] flag passed back from
 /// [`io_uring_queue_init_params`].
 #[inline]
-pub fn io_uring_prep_sendmsg(sqe: &mut io_uring_sqe, fd: i32, msg: NonNull<msghdr>, flags: u32) {
-    io_uring_prep_rw(IORING_OP_SENDMSG, sqe, fd, msg.as_ptr().cast(), 1, 0);
+pub fn io_uring_prep_sendmsg(sqe: &mut io_uring_sqe, fd: i32, msg: &msghdr, flags: u32) {
+    io_uring_prep_rw(IORING_OP_SENDMSG, sqe, fd, Some(msg), 1, 0);
     sqe.__bindgen_anon_3.msg_flags = flags;
 }
 
@@ -551,7 +506,7 @@ pub fn io_uring_prep_sendmsg(sqe: &mut io_uring_sqe, fd: i32, msg: NonNull<msghd
 /// generated by the poll request.
 #[inline]
 pub fn io_uring_prep_poll_add(sqe: &mut io_uring_sqe, fd: i32, poll_mask: u32) {
-    io_uring_prep_rw(IORING_OP_POLL_ADD, sqe, fd, ptr::null(), 0, 0);
+    io_uring_prep_rw_null(IORING_OP_POLL_ADD, sqe, fd, 0, 0);
     sqe.__bindgen_anon_3.poll32_events = poll_mask.to_le();
 }
 
@@ -582,7 +537,7 @@ pub fn io_uring_prep_poll_multishot(sqe: &mut io_uring_sqe, fd: i32, poll_mask: 
 /// behavior is identical.
 #[inline]
 pub fn io_uring_prep_poll_remove(sqe: &mut io_uring_sqe, user_data: u64) {
-    io_uring_prep_rw(IORING_OP_POLL_REMOVE, sqe, -1, ptr::null(), 0, 0);
+    io_uring_prep_rw_null(IORING_OP_POLL_REMOVE, sqe, -1, 0, 0);
     sqe.__bindgen_anon_2.addr = user_data
 }
 
@@ -600,14 +555,7 @@ pub fn io_uring_prep_poll_update(
     poll_mask: u32,
     flags: u32,
 ) {
-    io_uring_prep_rw(
-        IORING_OP_POLL_REMOVE,
-        sqe,
-        -1,
-        ptr::null(),
-        flags,
-        new_user_data,
-    );
+    io_uring_prep_rw_null(IORING_OP_POLL_REMOVE, sqe, -1, flags, new_user_data);
     sqe.__bindgen_anon_2.addr = old_user_data;
     sqe.__bindgen_anon_3.poll32_events = poll_mask.to_le();
 }
@@ -629,7 +577,7 @@ pub fn io_uring_prep_poll_update(
 /// helper.
 #[inline]
 pub fn io_uring_prep_fsync(sqe: &mut io_uring_sqe, fd: i32, fsync_flags: u32) {
-    io_uring_prep_rw(IORING_OP_FSYNC, sqe, fd, ptr::null(), 0, 0);
+    io_uring_prep_rw_null(IORING_OP_FSYNC, sqe, fd, 0, 0);
     sqe.__bindgen_anon_3.fsync_flags = fsync_flags;
 }
 
@@ -638,7 +586,7 @@ pub fn io_uring_prep_fsync(sqe: &mut io_uring_sqe, fd: i32, fsync_flags: u32) {
 /// The submission queue entry sqe does not require any additional setup.
 #[inline]
 pub fn io_uring_prep_nop(sqe: &mut io_uring_sqe) {
-    io_uring_prep_rw(IORING_OP_NOP, sqe, -1, ptr::null(), 0, 0);
+    io_uring_prep_rw_null(IORING_OP_NOP, sqe, -1, 0, 0);
 }
 
 /// Prepares a timeout request
@@ -662,20 +610,8 @@ pub fn io_uring_prep_nop(sqe: &mut io_uring_sqe) {
 /// The timeout completion event will trigger if either the specified timeout has occurred, or the
 /// specified number of events to wait for have been posted to the CQ ring.
 #[inline]
-pub fn io_uring_prep_timeout(
-    sqe: &mut io_uring_sqe,
-    ts: NonNull<timespec>,
-    count: u32,
-    flags: u32,
-) {
-    io_uring_prep_rw(
-        IORING_OP_TIMEOUT,
-        sqe,
-        -1,
-        ts.as_ptr().cast(),
-        1,
-        count as u64,
-    );
+pub fn io_uring_prep_timeout(sqe: &mut io_uring_sqe, ts: &mut timespec, count: u32, flags: u32) {
+    io_uring_prep_rw(IORING_OP_TIMEOUT, sqe, -1, Some(ts), 1, count as u64);
     sqe.__bindgen_anon_3.timeout_flags = flags;
 }
 
@@ -687,7 +623,7 @@ pub fn io_uring_prep_timeout(
 /// The timeout remove command does not currently accept any flags.
 #[inline]
 pub fn io_uring_prep_timeout_remove(sqe: &mut io_uring_sqe, user_data: u64, flags: u32) {
-    io_uring_prep_rw(IORING_OP_TIMEOUT_REMOVE, sqe, -1, ptr::null(), 0, 0);
+    io_uring_prep_rw_null(IORING_OP_TIMEOUT_REMOVE, sqe, -1, 0, 0);
     sqe.__bindgen_anon_2.addr = user_data;
     sqe.__bindgen_anon_3.timeout_flags = flags;
 }
@@ -708,17 +644,16 @@ pub fn io_uring_prep_timeout_remove(sqe: &mut io_uring_sqe, user_data: u64, flag
 #[inline]
 pub fn io_uring_prep_timeout_update(
     sqe: &mut io_uring_sqe,
-    ts: NonNull<timespec>,
+    ts: &mut timespec,
     user_data: u64,
     flags: u32,
 ) {
-    io_uring_prep_rw(
+    io_uring_prep_rw_null(
         IORING_OP_TIMEOUT_REMOVE,
         sqe,
         -1,
-        ptr::null(),
         0,
-        ts.as_ptr() as u64,
+        ts as *mut timespec as u64,
     );
     sqe.__bindgen_anon_2.addr = user_data;
     sqe.__bindgen_anon_3.timeout_flags = flags | IORING_TIMEOUT_UPDATE;
@@ -736,11 +671,18 @@ pub fn io_uring_prep_timeout_update(
 pub fn io_uring_prep_accept(
     sqe: &mut io_uring_sqe,
     fd: i32,
-    addr: *mut sockaddr,
-    addrlen: *mut socklen_t,
+    addr: Option<&mut sockaddr>,
+    addrlen: Option<&mut socklen_t>,
     flags: u32,
 ) {
-    io_uring_prep_rw(IORING_OP_ACCEPT, sqe, fd, addr.cast(), 0, addrlen as u64);
+    io_uring_prep_rw(
+        IORING_OP_ACCEPT,
+        sqe,
+        fd,
+        addr.as_ref(),
+        0,
+        addrlen.map_or(ptr::null_mut(), |a| a as *mut socklen_t) as u64,
+    );
     sqe.__bindgen_anon_3.accept_flags = flags;
 }
 
@@ -782,8 +724,8 @@ fn io_uring_set_target_fixed_file(sqe: &mut io_uring_sqe, file_index: u32) {
 pub fn io_uring_prep_accept_direct(
     sqe: &mut io_uring_sqe,
     fd: i32,
-    addr: *mut sockaddr,
-    addrlen: *mut socklen_t,
+    addr: Option<&mut sockaddr>,
+    addrlen: Option<&mut socklen_t>,
     flags: u32,
     file_index: u32,
 ) {
@@ -819,8 +761,8 @@ pub fn io_uring_prep_accept_direct(
 pub fn io_uring_prep_multishot_accept(
     sqe: &mut io_uring_sqe,
     fd: i32,
-    addr: *mut sockaddr,
-    addrlen: *mut socklen_t,
+    addr: Option<&mut sockaddr>,
+    addrlen: Option<&mut socklen_t>,
     flags: u32,
 ) {
     io_uring_prep_accept(sqe, fd, addr, addrlen, flags);
@@ -872,8 +814,8 @@ pub fn io_uring_prep_multishot_accept(
 pub fn io_uring_prep_multishot_accept_direct(
     sqe: &mut io_uring_sqe,
     fd: i32,
-    addr: *mut sockaddr,
-    addrlen: *mut socklen_t,
+    addr: Option<&mut sockaddr>,
+    addrlen: Option<&mut socklen_t>,
     flags: u32,
 ) {
     io_uring_prep_multishot_accept(sqe, fd, addr, addrlen, flags);
@@ -902,7 +844,7 @@ pub fn io_uring_prep_multishot_accept_direct(
 /// descriptor. Can be used to cancel any pending request in the ring.
 #[inline]
 pub fn io_uring_prep_cancel64(sqe: &mut io_uring_sqe, user_data: u64, flags: i32) {
-    io_uring_prep_rw(IORING_OP_ASYNC_CANCEL, sqe, -1, ptr::null(), 0, 0);
+    io_uring_prep_rw_null(IORING_OP_ASYNC_CANCEL, sqe, -1, 0, 0);
     sqe.__bindgen_anon_2.addr = user_data;
     sqe.__bindgen_anon_3.cancel_flags = flags as u32;
 }
@@ -950,7 +892,7 @@ pub fn io_uring_prep_cancel<T>(sqe: &mut io_uring_sqe, user_data: NonNull<T>, fl
 /// descriptor. Can be used to cancel any pending request in the ring.
 #[inline]
 pub fn io_uring_prep_cancel_fd(sqe: &mut io_uring_sqe, fd: i32, flags: u32) {
-    io_uring_prep_rw(IORING_OP_ASYNC_CANCEL, sqe, fd, ptr::null(), 0, 0);
+    io_uring_prep_rw_null(IORING_OP_ASYNC_CANCEL, sqe, fd, 0, 0);
     sqe.__bindgen_anon_3.cancel_flags = flags | IORING_ASYNC_CANCEL_FD;
 }
 
@@ -973,8 +915,8 @@ pub fn io_uring_prep_cancel_fd(sqe: &mut io_uring_sqe, fd: i32, flags: u32) {
 /// the requests in the chain are completed before timeout, then the link timeout request gets
 /// cancelled. Upon timeout, all the uncompleted requests in the chain get cancelled.
 #[inline]
-pub fn io_uring_prep_link_timeout(sqe: &mut io_uring_sqe, ts: NonNull<timespec>, flags: u32) {
-    io_uring_prep_rw(IORING_OP_LINK_TIMEOUT, sqe, -1, ts.as_ptr().cast(), 1, 0);
+pub fn io_uring_prep_link_timeout(sqe: &mut io_uring_sqe, ts: &mut timespec, flags: u32) {
+    io_uring_prep_rw(IORING_OP_LINK_TIMEOUT, sqe, -1, Some(ts), 1, 0);
     sqe.__bindgen_anon_3.timeout_flags = flags;
 }
 
@@ -983,44 +925,18 @@ pub fn io_uring_prep_link_timeout(sqe: &mut io_uring_sqe, ts: NonNull<timespec>,
 /// The submission queue entry is setup to use the file descriptor `fd` to start connecting to the
 /// destination described by the socket address at `addr` and of structure length `addrlen`.
 #[inline]
-pub fn io_uring_prep_connect(
-    sqe: &mut io_uring_sqe,
-    fd: i32,
-    addr: NonNull<sockaddr>,
-    addrlen: socklen_t,
-) {
-    io_uring_prep_rw(
-        IORING_OP_CONNECT,
-        sqe,
-        fd,
-        addr.as_ptr().cast(),
-        0,
-        addrlen as u64,
-    );
+pub fn io_uring_prep_connect(sqe: &mut io_uring_sqe, fd: i32, addr: &sockaddr, addrlen: socklen_t) {
+    io_uring_prep_rw(IORING_OP_CONNECT, sqe, fd, Some(addr), 0, addrlen as u64);
 }
 
 #[inline]
 pub fn io_uring_prep_files_update(sqe: &mut io_uring_sqe, fds: &mut [i32], offset: i32) {
-    io_uring_prep_rw(
-        IORING_OP_FILES_UPDATE,
-        sqe,
-        -1,
-        fds.as_mut_ptr().cast(),
-        fds.len() as u32,
-        offset as u64,
-    );
+    io_uring_prep_rw_buf(IORING_OP_FILES_UPDATE, sqe, -1, Some(fds), offset as u64);
 }
 
 #[inline]
 pub fn io_uring_prep_fallocate(sqe: &mut io_uring_sqe, fd: i32, mode: i32, offset: u64, len: u64) {
-    io_uring_prep_rw(
-        IORING_OP_FALLOCATE,
-        sqe,
-        fd,
-        ptr::null(),
-        mode as u32,
-        offset,
-    );
+    io_uring_prep_rw_null(IORING_OP_FALLOCATE, sqe, fd, mode as u32, offset);
     sqe.__bindgen_anon_2.addr = len;
 }
 
@@ -1028,11 +944,11 @@ pub fn io_uring_prep_fallocate(sqe: &mut io_uring_sqe, fd: i32, mode: i32, offse
 pub fn io_uring_prep_openat(
     sqe: &mut io_uring_sqe,
     dfd: i32,
-    path: *const char,
+    path: OsString,
     flags: i32,
     mode: mode_t,
 ) {
-    io_uring_prep_rw(IORING_OP_OPENAT, sqe, dfd, path.cast(), mode, 0);
+    io_uring_prep_rw(IORING_OP_OPENAT, sqe, dfd, Some(&path), mode, 0);
     sqe.__bindgen_anon_3.open_flags = flags as u32;
 }
 
@@ -1040,7 +956,7 @@ pub fn io_uring_prep_openat(
 pub fn io_uring_prep_openat_direct(
     sqe: &mut io_uring_sqe,
     dfd: i32,
-    path: *const char,
+    path: OsString,
     flags: i32,
     mode: mode_t,
     file_index: u32,
@@ -1057,7 +973,7 @@ pub fn io_uring_prep_openat_direct(
 
 #[inline]
 pub fn io_uring_prep_close(sqe: &mut io_uring_sqe, fd: i32) {
-    io_uring_prep_rw(IORING_OP_CLOSE, sqe, fd, ptr::null(), 0, 0);
+    io_uring_prep_rw_null(IORING_OP_CLOSE, sqe, fd, 0, 0);
 }
 
 #[inline]
@@ -1068,40 +984,19 @@ pub fn io_uring_prep_close_direct(sqe: &mut io_uring_sqe, file_index: u32) {
 
 #[inline]
 pub fn io_uring_prep_read(sqe: &mut io_uring_sqe, fd: i32, buf: &mut [u8], offset: u64) {
-    io_uring_prep_rw(
-        IORING_OP_READ,
-        sqe,
-        fd,
-        buf.as_mut_ptr().cast(),
-        buf.len() as u32,
-        offset,
-    );
+    io_uring_prep_rw_buf(IORING_OP_READ, sqe, fd, Some(buf), offset);
 }
 
 #[inline]
 pub fn io_uring_prep_write(sqe: &mut io_uring_sqe, fd: i32, buf: &[u8], offset: u64) {
-    io_uring_prep_rw(
-        IORING_OP_WRITE,
-        sqe,
-        fd,
-        buf.as_ptr().cast(),
-        buf.len() as u32,
-        offset,
-    );
+    io_uring_prep_rw_buf(IORING_OP_WRITE, sqe, fd, Some(buf), offset);
 }
 
 // TODO: statx fadvise madvise
 
 #[inline]
 pub fn io_uring_prep_send(sqe: &mut io_uring_sqe, sockfd: i32, buf: &[u8], flags: i32) {
-    io_uring_prep_rw(
-        IORING_OP_SEND,
-        sqe,
-        sockfd,
-        buf.as_ptr().cast(),
-        buf.len() as u32,
-        0,
-    );
+    io_uring_prep_rw_buf(IORING_OP_SEND, sqe, sockfd, Some(buf), 0);
     sqe.__bindgen_anon_3.msg_flags = flags as u32;
 }
 
@@ -1136,14 +1031,7 @@ pub fn io_uring_prep_send_zc(
     flags: i32,
     zc_flags: u32,
 ) {
-    io_uring_prep_rw(
-        IORING_OP_SEND_ZC,
-        sqe,
-        sockfd,
-        buf.as_ptr().cast(),
-        buf.len() as u32,
-        0,
-    );
+    io_uring_prep_rw_buf(IORING_OP_SEND_ZC, sqe, sockfd, Some(buf), 0);
     sqe.__bindgen_anon_3.msg_flags = flags as u32;
     sqe.ioprio = zc_flags as u16;
 }
@@ -1163,21 +1051,14 @@ pub fn io_uring_prep_send_zc_fixed(
 }
 
 #[inline]
-pub fn io_uring_prep_sendmsg_zc(sqe: &mut io_uring_sqe, fd: i32, msg: NonNull<msghdr>, flags: u32) {
+pub fn io_uring_prep_sendmsg_zc(sqe: &mut io_uring_sqe, fd: i32, msg: &msghdr, flags: u32) {
     io_uring_prep_sendmsg(sqe, fd, msg, flags);
     sqe.opcode = IORING_OP_SENDMSG_ZC as u8;
 }
 
 #[inline]
 pub fn io_uring_prep_recv(sqe: &mut io_uring_sqe, sockfd: i32, buf: &mut [u8], flags: i32) {
-    io_uring_prep_rw(
-        IORING_OP_RECV,
-        sqe,
-        sockfd,
-        buf.as_ptr().cast(),
-        buf.len() as u32,
-        0,
-    );
+    io_uring_prep_rw_buf(IORING_OP_RECV, sqe, sockfd, Some(buf), 0);
     sqe.__bindgen_anon_3.msg_flags = flags as u32;
 }
 
@@ -1204,14 +1085,14 @@ pub fn io_uring_prep_msg_ring_cqe_flags(
     flags: u32,
     cqe_flags: u32,
 ) {
-    io_uring_prep_rw(IORING_OP_MSG_RING, sqe, fd, ptr::null(), len, data);
+    io_uring_prep_rw_null(IORING_OP_MSG_RING, sqe, fd, len, data);
     sqe.__bindgen_anon_3.msg_ring_flags = IORING_MSG_RING_FLAGS_PASS | flags;
     sqe.__bindgen_anon_5.file_index = cqe_flags;
 }
 
 #[inline]
 pub fn io_uring_prep_msg_ring(sqe: &mut io_uring_sqe, fd: i32, len: u32, data: u64, flags: u32) {
-    io_uring_prep_rw(IORING_OP_MSG_RING, sqe, fd, ptr::null(), len, data);
+    io_uring_prep_rw_null(IORING_OP_MSG_RING, sqe, fd, len, data);
     sqe.__bindgen_anon_3.msg_ring_flags = flags;
 }
 
@@ -1228,7 +1109,7 @@ pub fn io_uring_prep_msg_ring_fd(
         IORING_OP_MSG_RING,
         sqe,
         fd,
-        IORING_MSG_SEND_FD as uintptr_t as _,
+        Some(&(IORING_MSG_SEND_FD as *const usize)),
         0,
         data,
     );
@@ -1263,11 +1144,10 @@ pub fn io_uring_prep_socket(
     protocol: i32,
     flags: u32,
 ) {
-    io_uring_prep_rw(
+    io_uring_prep_rw_null(
         IORING_OP_SOCKET,
         sqe,
         domain,
-        ptr::null(),
         protocol as u32,
         r#type as u64,
     );
@@ -1307,11 +1187,12 @@ pub fn io_uring_prep_socket_direct_alloc(
 /// # Safety
 /// `ring` must point to a valid and initialized `io_uring`
 #[inline]
-pub unsafe fn io_uring_sq_ready(ring: &io_uring) -> u32 {
-    let mut khead: u32 = ring.sq.khead.read_volatile();
+pub fn io_uring_sq_ready(ring: &io_uring) -> u32 {
+    let mut khead: u32 = unsafe { *ring.sq.khead };
 
     if ring.flags & IORING_SETUP_SQPOLL == 0 {
-        khead = io_uring_smp_load_acquire(ring.sq.khead);
+        let khead_ptr: &mut AtomicU32 = unsafe { &mut *ring.sq.khead.cast() };
+        khead = khead_ptr.load(Ordering::Acquire);
     }
 
     ring.sq.sqe_tail - khead
@@ -1337,18 +1218,17 @@ pub unsafe fn io_uring_sqring_wait(ring: &mut io_uring) -> i32 {
 
 #[inline]
 pub fn io_uring_cq_ready(cq: &io_uring_cq) -> u32 {
-    let tail: *const AtomicU32 = cq.ktail.cast();
-
     // SAFETY: io_uring_cq was initialized by kernel and has valid references for khead and ktail
-    unsafe { (*tail).load(Ordering::Acquire) - *cq.khead }
+    let tail: &AtomicU32 = unsafe { &*cq.ktail.cast() };
+    tail.load(Ordering::Acquire) - unsafe { *cq.khead }
 }
 
 #[inline]
 pub fn io_uring_cq_has_overflown(sq: &io_uring_sq) -> bool {
-    let kflags: *const AtomicU32 = sq.kflags.cast();
+    let kflags: &AtomicU32 = unsafe { &*sq.kflags.cast() };
 
     // SAFETY: io_uring_sq was initialized by kernel and has valid references for kflags
-    unsafe { (*kflags).load(Ordering::Relaxed) & IORING_SQ_CQ_OVERFLOW > 0 }
+    kflags.load(Ordering::Relaxed) & IORING_SQ_CQ_OVERFLOW > 0
 }
 
 /// # Safety
@@ -1383,8 +1263,9 @@ unsafe fn io_uring_peek_cqe_internal(
         0
     };
 
+    let tail_ptr: &mut AtomicU32 = &mut *(*ring).cq.ktail.cast();
     loop {
-        let tail = io_uring_smp_load_acquire((*ring).cq.ktail);
+        let tail = tail_ptr.load(Ordering::Acquire);
         let head = (*ring).cq.khead.read();
 
         cqe = ptr::null_mut();
@@ -1453,9 +1334,11 @@ pub fn io_uring_get_sqe(ring: &mut io_uring) -> Option<&mut io_uring_sqe> {
         }
 
         let head = if ring.flags & IORING_SETUP_SQPOLL == 0 {
-            io_uring_read_once(sq.khead)
+            let khead_ptr: &AtomicU32 = &*sq.khead.cast();
+            khead_ptr.load(Ordering::Relaxed)
         } else {
-            io_uring_smp_load_acquire(sq.khead)
+            let khead_ptr: &AtomicU32 = &*sq.khead.cast();
+            khead_ptr.load(Ordering::Acquire)
         };
 
         if next - head <= sq.ring_entries {
@@ -1485,9 +1368,10 @@ pub unsafe fn io_uring_buf_ring_init(br: *mut io_uring_buf_ring) {
 
 /// # Safety
 /// `br` must point to a valid and initialized `io_uring_buf_ring`
+// TODO: find better type for addr
 #[inline]
 pub unsafe fn io_uring_buf_ring_add(
-    br: *mut io_uring_buf_ring,
+    br: &mut io_uring_buf_ring,
     addr: *mut c_void,
     len: u32,
     bid: u16,
@@ -1495,7 +1379,7 @@ pub unsafe fn io_uring_buf_ring_add(
     buf_offset: i32,
 ) {
     let buf: *mut io_uring_buf = ptr::addr_of_mut!(
-        (*br).__bindgen_anon_1.bufs.as_mut()[(((*br).__bindgen_anon_1.__bindgen_anon_1.as_ref().tail
+        br.__bindgen_anon_1.bufs.as_mut()[((br.__bindgen_anon_1.__bindgen_anon_1.as_ref().tail
             as i32
             + buf_offset)
             & mask) as usize]
@@ -1509,12 +1393,12 @@ pub unsafe fn io_uring_buf_ring_add(
 /// # Safety
 /// `br` must point to a valid and initialized `io_uring_buf_ring`
 #[inline]
-pub unsafe fn io_uring_buf_ring_advance(br: *mut io_uring_buf_ring, count: i32) {
-    let new_tail = (*br).__bindgen_anon_1.__bindgen_anon_1.as_ref().tail + count as u16;
-    io_uring_smp_store_release(
-        ptr::addr_of_mut!((*br).__bindgen_anon_1.__bindgen_anon_1.as_mut().tail),
-        new_tail,
-    );
+pub unsafe fn io_uring_buf_ring_advance(br: &mut io_uring_buf_ring, count: i32) {
+    let new_tail = br.__bindgen_anon_1.__bindgen_anon_1.as_ref().tail + count as u16;
+    let tail: &mut AtomicU16 =
+        &mut *ptr::addr_of_mut!(br.__bindgen_anon_1.__bindgen_anon_1.as_mut().tail).cast();
+
+    tail.store(new_tail, Ordering::Release);
 }
 
 /// # Safety

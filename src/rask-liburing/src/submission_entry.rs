@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, os::fd::AsRawFd, ptr};
+use std::{error::Error, fmt, os::fd::AsRawFd};
 
 use rask_liburing_sys::{
     io_uring_prep_accept, io_uring_prep_close, io_uring_prep_multishot_accept, io_uring_prep_recv,
@@ -42,13 +42,7 @@ impl<'a> SubmissionEntry<'a> {
     ///
     /// See [accept(2)](https://man.archlinux.org/man/accept.2)
     pub fn prep_accept(&mut self, fd: impl AsRawFd) -> &mut Self {
-        io_uring_prep_accept(
-            self.inner,
-            fd.as_raw_fd(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            0,
-        );
+        io_uring_prep_accept(self.inner, fd.as_raw_fd(), None, None, 0);
 
         self
     }
@@ -63,13 +57,7 @@ impl<'a> SubmissionEntry<'a> {
     ///
     /// See [accept(2)](https://man.archlinux.org/man/accept.2) and [io_uring_prep_multishot_accept(3)](https://man.archlinux.org/man/io_uring_prep_multishot_accept.3)
     pub fn prep_accept_multi(&mut self, fd: &impl AsRawFd) -> &mut Self {
-        io_uring_prep_multishot_accept(
-            self.inner,
-            fd.as_raw_fd(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            0,
-        );
+        io_uring_prep_multishot_accept(self.inner, fd.as_raw_fd(), None, None, 0);
 
         self
     }
