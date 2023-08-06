@@ -924,16 +924,36 @@ pub fn io_uring_prep_link_timeout(sqe: &mut io_uring_sqe, ts: &mut timespec, fla
 ///
 /// The submission queue entry is setup to use the file descriptor `fd` to start connecting to the
 /// destination described by the socket address at `addr` and of structure length `addrlen`.
+///
+/// See [`connect(2)`](https://man.archlinux.org/man/connect.2)
 #[inline]
 pub fn io_uring_prep_connect(sqe: &mut io_uring_sqe, fd: i32, addr: &sockaddr, addrlen: socklen_t) {
     io_uring_prep_rw(IORING_OP_CONNECT, sqe, fd, Some(addr), 0, addrlen as u64);
 }
 
+/// Prepares a request for updating a number of previously registered file descriptors
+///
+/// The submission queue entry is setup to use the file descriptor array `fds` to update that
+/// amount of previously registered files starting at `offset`.
+///
+/// Once a previously registered file is updated with a new one, the existing entry is updated and
+/// then removed from the table. This operation is equivalent to first unregistering that entry and
+/// then inserting a new one, just bundled into one combined operation.
+///
+/// If `offset` is specified as [`IORING_FILE_INDEX_ALLOC`], io_uring will allocate free direct
+/// descriptors instead of having the application to pass, and store allocated direct descriptors
+/// into `fds`. The CQE's result will return the number of direct descriptors allocated.
 #[inline]
 pub fn io_uring_prep_files_update(sqe: &mut io_uring_sqe, fds: &mut [i32], offset: i32) {
     io_uring_prep_rw_buf(IORING_OP_FILES_UPDATE, sqe, -1, Some(fds), offset as u64);
 }
 
+/// Prepares a fallocate request
+///
+/// The submission queue entry is setup to use the file descriptor pointed to by `fd` to start a
+/// fallocate operation described by `mode` at `offset` and `len` length in bytes.
+///
+/// See [`fallocate(2)`](https://man.archlinux.org/man/fallocate.2) for more details.
 #[inline]
 pub fn io_uring_prep_fallocate(sqe: &mut io_uring_sqe, fd: i32, mode: i32, offset: u64, len: u64) {
     io_uring_prep_rw_null(IORING_OP_FALLOCATE, sqe, fd, mode as u32, offset);
@@ -971,22 +991,54 @@ pub fn io_uring_prep_openat_direct(
     io_uring_set_target_fixed_file(sqe, file_index);
 }
 
+/// Prepares a [`close`](https://man.archlinux.org/man/close.2) request
+///
+/// The submission queue entry is setup to close the file descriptor indicated by `fd`.
 #[inline]
 pub fn io_uring_prep_close(sqe: &mut io_uring_sqe, fd: i32) {
     io_uring_prep_rw_null(IORING_OP_CLOSE, sqe, fd, 0, 0);
 }
 
+/// Prepares a [`close`](https://man.archlinux.org/man/close.2) request
+///
+/// For a direct descriptor close request, the offset is specified by the `file_index` argument
+/// instead of the `fd`. This is identical to unregistering the direct descriptor, and is provided
+/// as a convenience.
 #[inline]
 pub fn io_uring_prep_close_direct(sqe: &mut io_uring_sqe, file_index: u32) {
     io_uring_prep_close(sqe, 0);
     io_uring_set_target_fixed_file(sqe, file_index);
 }
 
+/// Prepares an IO [`read`](https://man.archlinux.org/man/read.2) request
+///
+/// The submission queue entry is setup to use the file descriptor `fd` to start reading enough
+/// bytes to fill the buffer `buf` at the specified offset.
+///
+/// On files that support seeking, if the offset is set to -1, the read operation commences at the
+/// file offset, and the file offset is incremented by the number of bytes read. Not that for an
+/// async API, reading and updating the current file offset may result in unpredictable behavior,
+/// unless access to the file is serialized. It is not encouraged to use this feature, if it's
+/// possible to provide the desired IO offset from the application or library.
+///
+/// On files that are not capable of seeking, the offset must be 0 or -1.
 #[inline]
 pub fn io_uring_prep_read(sqe: &mut io_uring_sqe, fd: i32, buf: &mut [u8], offset: u64) {
     io_uring_prep_rw_buf(IORING_OP_READ, sqe, fd, Some(buf), offset);
 }
 
+/// Prepares an IO [`write`](https://man.archlinux.org/man/write.2) request
+///
+/// The submission queue entry is setup to use the file descriptor `fd` to start writing the entire
+/// buffer `buf` at the specified offset.
+///
+/// On files that support seeking, if the offset is set to -1, the read operation commences at the
+/// file offset, and the file offset is incremented by the number of bytes read. Not that for an
+/// async API, reading and updating the current file offset may result in unpredictable behavior,
+/// unless access to the file is serialized. It is not encouraged to use this feature, if it's
+/// possible to provide the desired IO offset from the application or library.
+///
+/// On files that are not capable of seeking, the offset must be 0 or -1.
 #[inline]
 pub fn io_uring_prep_write(sqe: &mut io_uring_sqe, fd: i32, buf: &[u8], offset: u64) {
     io_uring_prep_rw_buf(IORING_OP_WRITE, sqe, fd, Some(buf), offset);
@@ -994,12 +1046,24 @@ pub fn io_uring_prep_write(sqe: &mut io_uring_sqe, fd: i32, buf: &[u8], offset: 
 
 // TODO: statx fadvise madvise
 
+/// Prepares a [`send`](https://man.archlinux.org/man/send.2) request
+///
+/// The submission queue entry is setup to use the file descriptor `sockfd` to start sending the
+/// data from `buf` with modifier flags `flags`.
+///
+/// Note that using [`IOSQE_IO_LINK`] with this trype requires the setting of [`MSG_WAITALL`] in
+/// the flags argument, as a short send isn't considered an error condition without that being set.
+///
+/// See the man page linked above for more details on the underlying request.
 #[inline]
 pub fn io_uring_prep_send(sqe: &mut io_uring_sqe, sockfd: i32, buf: &[u8], flags: i32) {
     io_uring_prep_rw_buf(IORING_OP_SEND, sqe, sockfd, Some(buf), 0);
     sqe.__bindgen_anon_3.msg_flags = flags as u32;
 }
 
+/// Sets a socket destination address specified by `dest_addr` and its length using `addr_len`
+/// parameters. It can be used once `sqe` is prepared using any of the
+/// [`send(2)`](https://man.archlinux.org/man/send.2) io_uring helpers.
 #[inline]
 pub fn io_uring_prep_send_set_addr(
     sqe: &mut io_uring_sqe,
@@ -1010,6 +1074,16 @@ pub fn io_uring_prep_send_set_addr(
     sqe.__bindgen_anon_5.__bindgen_anon_1.addr_len = addr_len;
 }
 
+/// Prepares a [`sendto`](https://man.archlinux.org/man/sendto.2) request
+///
+/// The submission queue entry is setup to use the file descriptor `sockfd` to start sending the
+/// data from `buf` with modifier flags `flags`. The destination address is specified by `addr` and
+/// `addr_len` and must be a valid address for the socket type.
+///
+/// Note that using [`IOSQE_IO_LINK`] with this trype requires the setting of [`MSG_WAITALL`] in
+/// the flags argument, as a short send isn't considered an error condition without that being set.
+///
+/// See the man page linked above for more details on the underlying request.
 #[inline]
 pub fn io_uring_prep_sendto(
     sqe: &mut io_uring_sqe,
@@ -1023,6 +1097,14 @@ pub fn io_uring_prep_sendto(
     io_uring_prep_send_set_addr(sqe, addr, addr_len);
 }
 
+/// Prepares a zerocopy [`send`](https://man.archlinux.org/man/send.2) request
+///
+/// The submission queue entry is setup to use the file descriptor `sockfd` to start sending data
+/// from `buf` with send modifier flags `flags` and zerocopy modifier flags `zc_flags`.
+///
+/// This prepares an async zerocopy [`send(2)`](https://man.archlinux.org/man/send.2) request. See
+/// that man page for details. For details on the zerocopy nature of it, see
+/// [`io_uring_enter(2)`](https://man.archlinux.org/man/io_uring_enter.2).
 #[inline]
 pub fn io_uring_prep_send_zc(
     sqe: &mut io_uring_sqe,
@@ -1036,6 +1118,15 @@ pub fn io_uring_prep_send_zc(
     sqe.ioprio = zc_flags as u16;
 }
 
+/// Prepares a zerocopy [`send`](https://man.archlinux.org/man/send.2) request
+///
+/// This function works just like [`io_uring_prep_send_zc()`] except it requires the use of buffers
+/// that have been registered with [`io_uring_register_buffers()`]. The `buf` argument must fall
+/// within a region specified by `buf_index` in the previously registered buffer. The buffer need
+/// not be aligned with the start of the registered buffer.
+///
+/// Note that using [`IOSQE_IO_LINK`] with this trype requires the setting of [`MSG_WAITALL`] in
+/// the flags argument, as a short send isn't considered an error condition without that being set.
 #[inline]
 pub fn io_uring_prep_send_zc_fixed(
     sqe: &mut io_uring_sqe,
@@ -1050,18 +1141,69 @@ pub fn io_uring_prep_send_zc_fixed(
     sqe.__bindgen_anon_4.buf_index = buf_index as u16;
 }
 
+/// Prepares a [`sendmsg`](https://man.archlinux.org/man/sendmsg.2) request
+///
+/// This function accepts the same parameters as [`io_uring_prep_sendmsg()`] but prepares a zerocopy
+/// sendmsg request.
+///
+/// Note that using [`IOSQE_IO_LINK`] with this trype requires the setting of [`MSG_WAITALL`] in
+/// the flags argument, as a short send isn't considered an error condition without that being set.
 #[inline]
 pub fn io_uring_prep_sendmsg_zc(sqe: &mut io_uring_sqe, fd: i32, msg: &msghdr, flags: u32) {
     io_uring_prep_sendmsg(sqe, fd, msg, flags);
     sqe.opcode = IORING_OP_SENDMSG_ZC as u8;
 }
 
+/// Prepares a [`recv`](https://man.archlinux.org/man/recv.2) request
+///
+/// The submission queue entry is setup to use the file descriptor `sockfd` to start receiving the
+/// data into the destination buffer `buf` and with modifier flags `flags`.
+///
+/// After calling this function, additional io_uring internal modifier flags may be set in the SQE
+/// [`ioprio`](io_uring_sqe::ioprio) field. The following flags are supported:
+/// * [`IORING_RECVSEND_POLL_FIRST`]
+///   * If set, io_uring will assume the socket is currently empty and attempting to receive data
+///   will be unsuccessful. For this case, io_uring will arm internal poll and trigger a receive of
+///   the data when the socket has data to read. This initial receive attempt can be wasteful for
+///   the case where the socket is expected to be empty, setting this flag will bypass the initial
+///   receive attempt and go straight to arming poll. If poll does indicate that data is ready to be
+///   received, the operation will proceed.
+///   * Can be used with the CQE [`IORING_CQE_F_SOCK_NONEMPTY`] flag, which io_uring will set on
+///   CQEs after a [`recv(2)`](https://man.archlinux.org/man/recv.2) or
+///   [recvmsg(2)](https://man.archlinux.org/man/recvmsg.2) operation. If set, the socket still had
+///   data to be read after the operation completed. Both these flags are available since 5.19.
 #[inline]
 pub fn io_uring_prep_recv(sqe: &mut io_uring_sqe, sockfd: i32, buf: &mut [u8], flags: i32) {
     io_uring_prep_rw_buf(IORING_OP_RECV, sqe, sockfd, Some(buf), 0);
     sqe.__bindgen_anon_3.msg_flags = flags as u32;
 }
 
+/// Prepares a [`recv`](https://man.archlinux.org/man/recv.2) request
+///
+/// The submission queue entry is setup to use the file descriptor `sockfd` to start receiving the
+/// data into the destination buffer `buf` and with modifier flags `flags`.
+///
+/// The multishot version allows the application to issue a single receive request, which
+/// repeatedly posts a CQE when data is available. It requires `length` to be 0, the
+/// [`IOSQE_BUFFER_SELECT`] flag to be set, and no [`MSG_WAITALL`] flag to be set. Therefore each
+/// CQE will take a buffer out of a provided buffer pool for receiving. The application should
+/// check the flags of each CQE, regardless of its result. If a posted CQE does not have the
+/// [`IORING_CQE_F_MORE`] flag set then the multishot receive will be done and the application
+/// should issue a new request. Multishot variants are available since kernel 6.0.
+///
+/// After calling this function, additional io_uring internal modifier flags may be set in the SQE
+/// [`ioprio`](io_uring_sqe::ioprio) field. The following flags are supported:
+/// * [`IORING_RECVSEND_POLL_FIRST`]
+///   * If set, io_uring will assume the socket is currently empty and attempting to receive data
+///   will be unsuccessful. For this case, io_uring will arm internal poll and trigger a receive of
+///   the data when the socket has data to read. This initial receive attempt can be wasteful for
+///   the case where the socket is expected to be empty, setting this flag will bypass the initial
+///   receive attempt and go straight to arming poll. If poll does indicate that data is ready to be
+///   received, the operation will proceed.
+///   * Can be used with the CQE [`IORING_CQE_F_SOCK_NONEMPTY`] flag, which io_uring will set on
+///   CQEs after a [`recv(2)`](https://man.archlinux.org/man/recv.2) or
+///   [`recvmsg(2)`](https://man.archlinux.org/man/recvmsg.2) operation. If set, the socket still had
+///   data to be read after the operation completed. Both these flags are available since 5.19.
 #[inline]
 pub fn io_uring_prep_recv_multishot(
     sqe: &mut io_uring_sqe,
