@@ -12,6 +12,8 @@
 
 //! An idiomatic Rust wrapper around liburing-sys
 
+mod core;
+
 mod squeue;
 pub use squeue::*;
 

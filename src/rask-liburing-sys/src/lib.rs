@@ -1566,3 +1566,82 @@ pub unsafe fn io_uring_buf_ring_cq_advance(
 ) {
     io_uring_buf_ring_cq_advance_internal(cq, br, count, count)
 }
+
+// #[inline]
+// unsafe fn io_uring_peek_cqe_internal(
+//     ring: &mut io_uring,
+// ) -> std::io::Result<Option<&mut [&mut io_uring_cqe]>> {
+//     let mut cqe: Option<&mut io_uring_cqe> = None;
+//     let mut err: i32 = 0;
+//     let mut available;
+//     let mask = ring.cq.ring_mask;
+//
+//     let shift: i32 = if ring.flags & IORING_SETUP_CQE32 > 0 {
+//         1
+//     } else {
+//         0
+//     };
+//
+//     let tail_ptr: &mut AtomicU32 = &mut *ring.cq.ktail.cast();
+//     loop {
+//         let tail = tail_ptr.load(Ordering::Acquire);
+//         let head = ring.cq.khead.read();
+//
+//         cqe = None;
+//         available = tail - head;
+//
+//         if available == 0 {
+//             break;
+//         }
+//
+//         cqe = ring
+//             .cq
+//             .cqes
+//             .offset(((head & mask) << shift) as isize)
+//             .as_mut();
+//         if ring.features & IORING_FEAT_EXT_ARG == 0
+//             && cqe.unwrap().user_data == LIBURING_UDATA_TIMEOUT
+//         {
+//             if cqe.unwrap().res < 0 {
+//                 return Err(std::io::Error::from_raw_os_error(-cqe.unwrap().res));
+//             }
+//             io_uring_cq_advance(&mut ring.cq, 1);
+//
+//             if err == 0 {
+//                 continue;
+//             }
+//             cqe = None;
+//         }
+//
+//         break;
+//     }
+//
+//     *cqe_ptr = cqe;
+//     if !nr_available.is_null() {
+//         *nr_available = available;
+//     }
+//
+//     err
+// }
+//
+// /// # Safety
+// /// `ring` must point to a valid and initialized `io_uring`
+// #[inline]
+// pub unsafe fn io_uring_peek_cqe(ring: &mut io_uring, cqe_ptr: *mut *mut io_uring_cqe) -> i32 {
+//     if io_uring_peek_cqe_internal(ring, cqe_ptr, ptr::null_mut()) == 0 && !cqe_ptr.is_null() {
+//         return 0;
+//     }
+//
+//     io_uring_wait_cqe_nr(ring, cqe_ptr, 0)
+// }
+//
+// /// # Safety
+// /// `ring` must point to a valid and initialized `io_uring`
+// #[inline]
+// pub unsafe fn io_uring_wait_cqe(ring: &mut io_uring, cqe_ptr: *mut *mut io_uring_cqe) -> i32 {
+//     if io_uring_peek_cqe_internal(ring, cqe_ptr, ptr::null_mut()) == 0 && !cqe_ptr.is_null() {
+//         return 0;
+//     }
+//
+//     io_uring_wait_cqe_nr(ring, cqe_ptr, 1)
+// }
