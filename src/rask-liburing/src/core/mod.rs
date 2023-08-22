@@ -76,4 +76,7 @@ const IORING_FEAT_REG_REG_RING: u32 = 8192;
 const IORING_RSRC_REGISTER_SPARSE: u32 = 1;
 const IORING_REGISTER_FILES_SKIP: i32 = -2;
 
+pub mod sq;
 pub mod sqe;
+
+pub mod cqe;
