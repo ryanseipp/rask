@@ -79,4 +79,5 @@ const IORING_REGISTER_FILES_SKIP: i32 = -2;
 pub mod sq;
 pub mod sqe;
 
+pub mod cq;
 pub mod cqe;

@@ -1,9 +1,9 @@
 use std::sync::atomic::AtomicU32;
 
-use super::sqe::IoUringSqe;
+use super::cqe::IoUringCqe;
 
 #[repr(C)]
-pub struct IoUringSq<'a, const N: usize> {
+pub struct IoUringCq<'a, const N: usize> {
     khead: &'a AtomicU32,
     ktail: &'a AtomicU32,
     #[deprecated(note = "Use ring_mask instead")]
@@ -11,12 +11,8 @@ pub struct IoUringSq<'a, const N: usize> {
     #[deprecated(note = "Use ring_entries instead")]
     kring_entries: &'a u32,
     kflags: &'a u32,
-    kdropped: &'a u32,
-    array: &'a [u32; N],
-    sqes: &'a [IoUringSqe; N],
-
-    sqe_head: u32,
-    sqe_tail: u32,
+    koverflow: &'a u32,
+    cqes: &'a [IoUringCqe; N],
 
     ring_sz: usize,
     ring_ptr: *const libc::c_void,
@@ -31,36 +27,36 @@ pub struct IoUringSq<'a, const N: usize> {
 mod test {
     use std::mem::{align_of, size_of};
 
-    use crate::core::sq::IoUringSq;
+    use crate::core::cq::IoUringCq;
 
     #[test]
-    fn iouringsq_has_correct_layout() {
+    fn iouringcq_has_correct_layout() {
         assert_eq!(
-            size_of::<IoUringSq<'_, 0>>(),
-            104,
+            size_of::<IoUringCq<'_, 0>>(),
+            88,
             "Size of: {}",
-            size_of::<IoUringSq<'_, 0>>()
+            size_of::<IoUringCq<'_, 0>>()
         );
 
         assert_eq!(
-            size_of::<IoUringSq<'_, 1024>>(),
-            104,
+            size_of::<IoUringCq<'_, 1024>>(),
+            88,
             "Size of: {}",
-            size_of::<IoUringSq<'_, 1024>>()
+            size_of::<IoUringCq<'_, 1024>>()
         );
 
         assert_eq!(
-            align_of::<IoUringSq<'_, 0>>(),
+            align_of::<IoUringCq<'_, 0>>(),
             8,
             "Alignment of: {}",
-            align_of::<IoUringSq<'_, 0>>()
+            align_of::<IoUringCq<'_, 0>>()
         );
 
         assert_eq!(
-            align_of::<IoUringSq<'_, 1024>>(),
+            align_of::<IoUringCq<'_, 1024>>(),
             8,
             "Alignment of: {}",
-            align_of::<IoUringSq<'_, 1024>>()
+            align_of::<IoUringCq<'_, 1024>>()
         );
     }
 }

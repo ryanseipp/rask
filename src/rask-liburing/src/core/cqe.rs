@@ -25,10 +25,9 @@ pub struct IoUringCqe {
     user_data: u64,
     res: i32,
     flags: u32,
-
     // If the ring is initialized with IORING_SETUP_CQE32, then this field contains 16 bytes of
     // padding, double the size of the CQE.
-    big_cqe: [u64; 0],
+    // big_cqe: [u64; 0],
 }
 
 impl IoUringCqe {
