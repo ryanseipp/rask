@@ -4,27 +4,27 @@ use super::sqe::IoUringSqe;
 
 #[repr(C)]
 pub struct IoUringSq<'a, const N: usize> {
-    khead: &'a AtomicU32,
-    ktail: &'a AtomicU32,
+    pub(crate) khead: &'a AtomicU32,
+    pub(crate) ktail: &'a AtomicU32,
     #[deprecated(note = "Use ring_mask instead")]
-    kring_mask: &'a u32,
+    pub(crate) kring_mask: &'a u32,
     #[deprecated(note = "Use ring_entries instead")]
-    kring_entries: &'a u32,
-    kflags: &'a u32,
-    kdropped: &'a u32,
-    array: &'a [u32; N],
-    sqes: &'a [IoUringSqe; N],
+    pub(crate) kring_entries: &'a u32,
+    pub(crate) kflags: &'a u32,
+    pub(crate) kdropped: &'a u32,
+    pub(crate) array: &'a [u32; N],
+    pub(crate) sqes: &'a mut [IoUringSqe; N],
 
-    sqe_head: u32,
-    sqe_tail: u32,
+    pub(crate) sqe_head: u32,
+    pub(crate) sqe_tail: u32,
 
-    ring_sz: usize,
-    ring_ptr: *const libc::c_void,
+    pub(crate) ring_sz: usize,
+    pub(crate) ring_ptr: *const libc::c_void,
 
-    ring_mask: u32,
-    ring_entries: u32,
+    pub(crate) ring_mask: u32,
+    pub(crate) ring_entries: u32,
 
-    pad: [u32; 2],
+    pub(crate) pad: [u32; 2],
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-use super::cqe::IoUringCqe;
+use super::{cqe::IoUringCqe, IORING_SQ_CQ_OVERFLOW};
 
 #[repr(C)]
 pub struct IoUringCq<'a, const N: usize> {
@@ -10,7 +10,7 @@ pub struct IoUringCq<'a, const N: usize> {
     kring_mask: &'a u32,
     #[deprecated(note = "Use ring_entries instead")]
     kring_entries: &'a u32,
-    kflags: &'a u32,
+    kflags: &'a AtomicU32,
     koverflow: &'a u32,
     cqes: &'a [IoUringCqe; N],
 
@@ -21,6 +21,18 @@ pub struct IoUringCq<'a, const N: usize> {
     ring_entries: u32,
 
     pad: [u32; 2],
+}
+
+impl<'a, const N: usize> IoUringCq<'a, N> {
+    /// Gets the number of unconsumed, ready entries
+    pub fn ready(&self) -> u32 {
+        self.ktail.load(Ordering::Acquire) - self.khead.load(Ordering::Relaxed)
+    }
+
+    /// Determines if ready entries have been dropped due to a full CQ
+    pub fn has_overflown(&self) -> bool {
+        self.kflags.load(Ordering::Relaxed) & IORING_SQ_CQ_OVERFLOW > 0
+    }
 }
 
 #[cfg(test)]
