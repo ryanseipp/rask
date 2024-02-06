@@ -9,7 +9,7 @@ description = "Rust bindings to liburing"
 libc = { workspace = true }
 
 [build-dependencies]
-bindgen = "0.69.2"
+bindgen = "0.69.4"
 
 [[example]]
 name = "tcp_server"
