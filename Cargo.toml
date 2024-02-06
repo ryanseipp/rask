@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.dependencies]
-libc = "0.2.152"
+libc = "0.2.153"
 slab = "0.4.8"
 
 [profile.release]
