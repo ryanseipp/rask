@@ -12,4 +12,4 @@ description = "Idiomatic Rust wrapper around rask-liburing-sys"
 [dependencies]
 rask-liburing-sys = { version = "2.4.0", path = "../rask-liburing-sys" }
 libc = { workspace = true }
-bitflags = "2.4.2"
+bitflags = "2.5.0"
